@@ -23,7 +23,7 @@
 需要 **Windows + WebView2**（系统自带）和 **Rust 1.77+**（含 MSVC 工具链）。没有 Node 依赖 —— 设置页是手写原生 JS。
 
 ```powershell
-git clone <this repo> && cd ds-companion
+git clone https://github.com/wwwangzilin/ds-companion.git && cd ds-companion
 cd src-tauri
 cargo build            # 首次约 3-5 分钟
 .\target\debug\ds-companion.exe
