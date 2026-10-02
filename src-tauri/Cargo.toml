@@ -1,0 +1,26 @@
+[package]
+name = "ds-companion"
+version = "0.0.1"
+description = "DeepSeek desktop companion (P0 probe)"
+authors = ["ds-companion"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+# tray-icon：常驻托盘（关窗不退出），这是"空闲主动"能长期活着的前提。
+# 不开 image-png：那个特性要拉 image crate，本机离线缓存里没有；
+# 托盘图标用打包时嵌进去的 default_window_icon()，运行时不需要解码。
+tauri = { version = "2.11.3", features = ["tray-icon"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

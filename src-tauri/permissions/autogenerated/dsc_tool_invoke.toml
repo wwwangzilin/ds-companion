@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-tool-invoke"
+description = "Enables the dsc_tool_invoke command without any pre-configured scope."
+commands.allow = ["dsc_tool_invoke"]
+
+[[permission]]
+identifier = "deny-dsc-tool-invoke"
+description = "Denies the dsc_tool_invoke command without any pre-configured scope."
+commands.deny = ["dsc_tool_invoke"]

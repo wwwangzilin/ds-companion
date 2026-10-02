@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-turn-report"
+description = "Enables the dsc_turn_report command without any pre-configured scope."
+commands.allow = ["dsc_turn_report"]
+
+[[permission]]
+identifier = "deny-dsc-turn-report"
+description = "Denies the dsc_turn_report command without any pre-configured scope."
+commands.deny = ["dsc_turn_report"]

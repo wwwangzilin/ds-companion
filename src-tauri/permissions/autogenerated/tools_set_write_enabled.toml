@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tools-set-write-enabled"
+description = "Enables the tools_set_write_enabled command without any pre-configured scope."
+commands.allow = ["tools_set_write_enabled"]
+
+[[permission]]
+identifier = "deny-tools-set-write-enabled"
+description = "Denies the tools_set_write_enabled command without any pre-configured scope."
+commands.deny = ["tools_set_write_enabled"]

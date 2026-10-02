@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-settings-take-tab"
+description = "Enables the settings_take_tab command without any pre-configured scope."
+commands.allow = ["settings_take_tab"]
+
+[[permission]]
+identifier = "deny-settings-take-tab"
+description = "Denies the settings_take_tab command without any pre-configured scope."
+commands.deny = ["settings_take_tab"]

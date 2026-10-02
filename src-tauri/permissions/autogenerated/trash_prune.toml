@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-trash-prune"
+description = "Enables the trash_prune command without any pre-configured scope."
+commands.allow = ["trash_prune"]
+
+[[permission]]
+identifier = "deny-trash-prune"
+description = "Denies the trash_prune command without any pre-configured scope."
+commands.deny = ["trash_prune"]

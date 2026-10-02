@@ -1,0 +1,39 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-remote",
+  "description": "远程 DeepSeek 页面：只允许写日志、读注入配置、开设置窗口、记忆热度记账、把整理好的记忆落盘（只增不删）、角色状态回报、以及提交模型发出的工具调用（工具调用的沙箱/白名单/配额/审计全在 Rust 的 tools::run 里，页面只递参数）。人设与记忆的删除权限一概不给。",
+  "windows": [
+    "main"
+  ],
+  "remote": {
+    "urls": [
+      "https://chat.deepseek.com",
+      "https://*.deepseek.com"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "allow-dsc-log",
+    "allow-dsc-get-config",
+    "allow-open-settings",
+    "allow-memory-touch",
+    "allow-memory-ingest",
+    "allow-dsc-turn-report",
+    "allow-dsc-sense-reserve",
+    "allow-dsc-sense-apply",
+    "allow-dsc-proactive",
+    "allow-dsc-proactive-done",
+    "allow-dsc-attention",
+    "allow-dsc-state-get",
+    "allow-user-state-get",
+    "allow-dsc-chat-append",
+    "allow-chat-recent",
+    "allow-dsc-review-reserve",
+    "allow-dsc-review-submit",
+    "allow-dsc-tool-invoke",
+    "allow-dsc-tools-brief",
+    "allow-dsc-tool-wrap",
+    "allow-tool-pending-list",
+    "allow-dsc-tool-proposal-decide"
+  ]
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-persona-save"
+description = "Enables the persona_save command without any pre-configured scope."
+commands.allow = ["persona_save"]
+
+[[permission]]
+identifier = "deny-persona-save"
+description = "Denies the persona_save command without any pre-configured scope."
+commands.deny = ["persona_save"]

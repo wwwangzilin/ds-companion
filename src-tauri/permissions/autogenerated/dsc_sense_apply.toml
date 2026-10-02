@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-sense-apply"
+description = "Enables the dsc_sense_apply command without any pre-configured scope."
+commands.allow = ["dsc_sense_apply"]
+
+[[permission]]
+identifier = "deny-dsc-sense-apply"
+description = "Denies the dsc_sense_apply command without any pre-configured scope."
+commands.deny = ["dsc_sense_apply"]

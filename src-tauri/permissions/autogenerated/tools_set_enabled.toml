@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tools-set-enabled"
+description = "Enables the tools_set_enabled command without any pre-configured scope."
+commands.allow = ["tools_set_enabled"]
+
+[[permission]]
+identifier = "deny-tools-set-enabled"
+description = "Denies the tools_set_enabled command without any pre-configured scope."
+commands.deny = ["tools_set_enabled"]

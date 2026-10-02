@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-proposal-accept"
+description = "Enables the proposal_accept command without any pre-configured scope."
+commands.allow = ["proposal_accept"]
+
+[[permission]]
+identifier = "deny-proposal-accept"
+description = "Denies the proposal_accept command without any pre-configured scope."
+commands.deny = ["proposal_accept"]

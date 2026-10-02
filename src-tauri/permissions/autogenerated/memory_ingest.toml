@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-memory-ingest"
+description = "Enables the memory_ingest command without any pre-configured scope."
+commands.allow = ["memory_ingest"]
+
+[[permission]]
+identifier = "deny-memory-ingest"
+description = "Denies the memory_ingest command without any pre-configured scope."
+commands.deny = ["memory_ingest"]

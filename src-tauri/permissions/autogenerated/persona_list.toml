@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-persona-list"
+description = "Enables the persona_list command without any pre-configured scope."
+commands.allow = ["persona_list"]
+
+[[permission]]
+identifier = "deny-persona-list"
+description = "Denies the persona_list command without any pre-configured scope."
+commands.deny = ["persona_list"]

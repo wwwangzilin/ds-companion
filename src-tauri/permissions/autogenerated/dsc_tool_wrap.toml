@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-tool-wrap"
+description = "Enables the dsc_tool_wrap command without any pre-configured scope."
+commands.allow = ["dsc_tool_wrap"]
+
+[[permission]]
+identifier = "deny-dsc-tool-wrap"
+description = "Denies the dsc_tool_wrap command without any pre-configured scope."
+commands.deny = ["dsc_tool_wrap"]

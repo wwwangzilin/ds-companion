@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-review-reserve"
+description = "Enables the dsc_review_reserve command without any pre-configured scope."
+commands.allow = ["dsc_review_reserve"]
+
+[[permission]]
+identifier = "deny-dsc-review-reserve"
+description = "Denies the dsc_review_reserve command without any pre-configured scope."
+commands.deny = ["dsc_review_reserve"]

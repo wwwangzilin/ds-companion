@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-proactive-done"
+description = "Enables the dsc_proactive_done command without any pre-configured scope."
+commands.allow = ["dsc_proactive_done"]
+
+[[permission]]
+identifier = "deny-dsc-proactive-done"
+description = "Denies the dsc_proactive_done command without any pre-configured scope."
+commands.deny = ["dsc_proactive_done"]

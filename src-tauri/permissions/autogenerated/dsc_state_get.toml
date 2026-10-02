@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-state-get"
+description = "Enables the dsc_state_get command without any pre-configured scope."
+commands.allow = ["dsc_state_get"]
+
+[[permission]]
+identifier = "deny-dsc-state-get"
+description = "Denies the dsc_state_get command without any pre-configured scope."
+commands.deny = ["dsc_state_get"]

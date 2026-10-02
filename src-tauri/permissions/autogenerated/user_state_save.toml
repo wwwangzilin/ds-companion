@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-user-state-save"
+description = "Enables the user_state_save command without any pre-configured scope."
+commands.allow = ["user_state_save"]
+
+[[permission]]
+identifier = "deny-user-state-save"
+description = "Denies the user_state_save command without any pre-configured scope."
+commands.deny = ["user_state_save"]

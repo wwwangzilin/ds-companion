@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-user-state-get"
+description = "Enables the user_state_get command without any pre-configured scope."
+commands.allow = ["user_state_get"]
+
+[[permission]]
+identifier = "deny-user-state-get"
+description = "Denies the user_state_get command without any pre-configured scope."
+commands.deny = ["user_state_get"]

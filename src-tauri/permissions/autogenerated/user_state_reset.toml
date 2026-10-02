@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-user-state-reset"
+description = "Enables the user_state_reset command without any pre-configured scope."
+commands.allow = ["user_state_reset"]
+
+[[permission]]
+identifier = "deny-user-state-reset"
+description = "Denies the user_state_reset command without any pre-configured scope."
+commands.deny = ["user_state_reset"]

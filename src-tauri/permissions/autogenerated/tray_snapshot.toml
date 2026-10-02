@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tray-snapshot"
+description = "Enables the tray_snapshot command without any pre-configured scope."
+commands.allow = ["tray_snapshot"]
+
+[[permission]]
+identifier = "deny-tray-snapshot"
+description = "Denies the tray_snapshot command without any pre-configured scope."
+commands.deny = ["tray_snapshot"]

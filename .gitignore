@@ -1,0 +1,18 @@
+# 鏋勫缓浜х墿
+/src-tauri/target
+/src-tauri/gen
+node_modules
+
+# 鏃ュ織涓庤繍琛屾椂鍨冨溇
+*.log
+*.tmp-write
+*.bad-*
+__pycache__/
+*.pyc
+
+# 鏈湴楠屾敹浜х墿锛堣剼鏈湰韬彲浠ュ紑婧愶紝浣嗚繖浜涘揩鐓ф槸璺戝嚭鏉ョ殑鐜板満锛屼笉杩涗粨搴擄級
+.verify/out-*.json
+.verify/out-*.txt
+
+# 本地界面截图：可能含真实记忆/状态/对话，确认过再单独加进来
+preview/

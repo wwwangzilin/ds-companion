@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsh-preset-import"
+description = "Enables the dsh_preset_import command without any pre-configured scope."
+commands.allow = ["dsh_preset_import"]
+
+[[permission]]
+identifier = "deny-dsh-preset-import"
+description = "Denies the dsh_preset_import command without any pre-configured scope."
+commands.deny = ["dsh_preset_import"]

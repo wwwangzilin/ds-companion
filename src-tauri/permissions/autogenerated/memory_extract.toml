@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-memory-extract"
+description = "Enables the memory_extract command without any pre-configured scope."
+commands.allow = ["memory_extract"]
+
+[[permission]]
+identifier = "deny-memory-extract"
+description = "Denies the memory_extract command without any pre-configured scope."
+commands.deny = ["memory_extract"]

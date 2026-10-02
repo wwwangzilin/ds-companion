@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DS Companion · 设置</title>
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <!-- 无边框窗口：这一条是拖拽区 -->
+      <div class="titlebar" data-tauri-drag-region>
+        <div class="tb-brand" data-tauri-drag-region>
+          <span class="tb-mark"></span>
+          <span class="tb-name" data-tauri-drag-region>DS Companion</span>
+        </div>
+        <div class="tb-nav">
+          <button class="tb-tab on" data-tab="persona">人设</button>
+          <button class="tb-tab" data-tab="state">状态</button>
+          <button class="tb-tab" data-tab="memory">记忆</button>
+          <button class="tb-tab" data-tab="tools">工具</button>
+          <button class="tb-tab" data-tab="log">日志</button>
+        </div>
+        <div class="tb-actions">
+          <button class="tb-btn" id="win-min" title="最小化" aria-label="最小化">
+            <svg viewBox="0 0 12 12"><path d="M2 6h8" /></svg>
+          </button>
+          <button class="tb-btn" id="win-max" title="最大化" aria-label="最大化">
+            <svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1.5" /></svg>
+          </button>
+          <button class="tb-btn close" id="win-close" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- ══════════════ 人设 ══════════════ -->
+      <div class="body" id="tab-persona">
+        <aside class="rail">
+          <div class="rail-head">
+            <h1>人设库</h1>
+            <span class="rail-sub" id="list-foot">—</span>
+          </div>
+          <div class="list" id="list"></div>
+          <div class="rail-foot">
+            <button class="btn block" id="btn-new">
+              <svg viewBox="0 0 12 12" class="ico"><path d="M6 2.5v7M2.5 6h7" /></svg>新建人设
+            </button>
+            <button class="btn ghost block" id="btn-import">
+              <svg viewBox="0 0 12 12" class="ico"><path d="M6 2v5M3.6 5l2.4 2.4L8.4 5M2.5 9.5h7" /></svg>从 DSH 导入
+            </button>
+          </div>
+        </aside>
+
+        <main class="content">
+          <section class="hero">
+            <div class="hero-top">
+              <div class="hero-info">
+                <span class="dot" id="hero-dot"></span>
+                <div>
+                  <div class="hero-label">当前注入</div>
+                  <div class="hero-value" id="status">正在读取…</div>
+                </div>
+              </div>
+              <div class="hero-ctrl">
+                <select id="active" class="select" title="切换激活的人设"></select>
+                <div class="seg" id="cadence">
+                  <span class="seg-pill" id="seg-pill"></span>
+                  <button data-v="off">关闭</button>
+                  <button data-v="first">仅首条</button>
+                  <button data-v="every">每轮</button>
+                </div>
+              </div>
+            </div>
+            <p class="hint" id="cost-hint"></p>
+          </section>
+
+          <section class="editor">
+            <header class="editor-head">
+              <h2 id="editor-title">未选择人设</h2>
+              <span class="editor-sub" id="editor-meta"></span>
+            </header>
+            <div class="fields">
+              <div class="row">
+                <label class="field">
+                  <span>名字</span>
+                  <input id="f-name" placeholder="例如：猫娘模式" />
+                </label>
+                <label class="field">
+                  <span>说明</span>
+                  <input id="f-desc" placeholder="一句话说明这个人设的用途" />
+                </label>
+              </div>
+              <label class="field grow">
+                <span>人设正文<em>会拼在发送内容前面交给模型</em></span>
+                <textarea id="f-body" spellcheck="false" placeholder="你是「…」，一个…"></textarea>
+              </label>
+            </div>
+            <footer class="editor-foot">
+              <span class="count" id="f-count">0 字 · 约 0 tokens</span>
+              <span class="flex-spacer"></span>
+              <button class="btn danger" id="btn-delete" disabled>删除</button>
+              <button class="btn primary" id="btn-save" disabled>保存</button>
+            </footer>
+          </section>
+        </main>
+      </div>
+
+      <!-- ══════════════ 状态 ══════════════ -->
+      <div class="body hidden" id="tab-state">
+        <aside class="rail">
+          <div class="rail-head">
+            <h1>角色状态</h1>
+            <span class="rail-sub" id="st-foot">—</span>
+          </div>
+          <div class="list" id="st-list"></div>
+          <div class="rail-foot">
+            <p class="rail-note">
+              每个角色一份状态：心情、好感、精力、处境、回锚锚点。它每轮都注进对话 ——
+              这是"她记得你俩聊到哪了"的来源。
+            </p>
+          </div>
+        </aside>
+
+        <main class="content">
+          <!-- 「今天」：把散在状态/聊天留档/记忆/工具里的"这一天的她"合成一段人话。
+               放在状态页最上面，是因为它是**先看**的东西 —— 细节才往下翻。 -->
+          <section class="editor" id="today-card">
+            <header class="editor-head">
+              <h2>她今天怎么样</h2>
+              <span class="editor-sub" id="today-sub">—</span>
+            </header>
+            <p class="hint" id="today-headline">—</p>
+            <div class="today-stats" id="today-stats"></div>
+            <ul class="today-lines" id="today-lines"></ul>
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <button class="btn ghost" id="today-refresh">刷新</button>
+            </div>
+          </section>
+
+          <section class="hero">
+            <div class="hero-top">
+              <div class="hero-info">
+                <span class="dot" id="st-dot"></span>
+                <div>
+                  <div class="hero-label">此刻状态</div>
+                  <div class="hero-value" id="st-summary">读选中一个角色…</div>
+                </div>
+              </div>
+              <div class="hero-ctrl">
+                <label class="switch" title="把状态块注进每轮对话">
+                  <input type="checkbox" id="st-enabled" />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">注入状态</span>
+                </label>
+                <label class="switch" title="右下角显示心情/好感的小胶囊">
+                  <input type="checkbox" id="st-hud" />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">显示 HUD</span>
+                </label>
+                <label class="switch" title="把虚拟身体层（困倦/体力/心跳/身体语言）一起注进【状态】块">
+                  <input type="checkbox" id="st-body" />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">注入身体</span>
+                </label>
+                <label class="switch" title="把主人的状态一起注入，让她知道该收着点还是该多陪一会儿">
+                  <input type="checkbox" id="st-user" />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">注入对方</span>
+                </label>
+              </div>
+            </div>
+            <div class="spark" id="st-spark"></div>
+            <p class="hint" id="st-hint"></p>
+            <div class="jump" id="st-jump">
+              <button data-jump="sec-selfedit">自我修订<b id="jump-prop"></b></button>
+              <button data-jump="sec-body">虚拟身体</button>
+              <button data-jump="sec-user">主人状态</button>
+              <button data-jump="sec-addendum">自订设定</button>
+              <button data-jump="sec-ms">里程碑</button>
+            </div>
+          </section>
+
+          <section class="editor">
+            <header class="editor-head">
+              <h2 id="st-editor-title">未选择角色</h2>
+              <span class="editor-sub" id="st-editor-meta"></span>
+            </header>
+
+<span id="sec-selfedit"></span>
+              <div class="group-head">
+                <span>她的自我修订</span>
+                <em>让她读最近的对话、反省自己 —— 只提案，采纳与否在主人</em>
+              </div>
+              <div class="gates">
+                <div class="gate">
+                  <span class="gate-label">反思时机</span>
+                  <div class="seg small" id="st-review">
+                    <span class="seg-pill" id="st-review-pill"></span>
+                    <button data-v="off">关</button>
+                    <button data-v="manual">手动</button>
+                    <button data-v="auto">每 30 轮</button>
+                  </div>
+                </div>
+                <button class="btn ghost" id="st-review-now">让她反思一下</button>
+                <span class="save-note" id="st-review-note"></span>
+              </div>
+              <div class="prop-list" id="prop-list"></div>
+
+            <div class="gates">
+              <div class="gate">
+                <span class="gate-label" title="自动：本地关键词判断主人是不是在干活（不上模型、零成本）。工作态下她收着点、不撒娇、不扣好感、不主动搭话。">任务模式</span>
+                <div class="seg small" id="st-task">
+                  <span class="seg-pill" id="st-task-pill"></span>
+                  <button data-v="auto">自动</button>
+                  <button data-v="on">一直工作</button>
+                  <button data-v="off">一直日常</button>
+                </div>
+              </div>
+              <div class="gate">
+                <span class="gate-label">人设回锚</span>
+                <div class="seg small" id="st-anchor">
+                  <span class="seg-pill" id="st-anchor-pill"></span>
+                  <button data-v="0">关</button>
+                  <button data-v="10">10 轮</button>
+                  <button data-v="20">20 轮</button>
+                  <button data-v="50">50 轮</button>
+                </div>
+              </div>
+              <div class="gate">
+                <span class="gate-label">情绪感知</span>
+                <div class="seg small" id="st-sense">
+                  <span class="seg-pill" id="st-sense-pill"></span>
+                  <button data-v="off">关</button>
+                  <button data-v="local">本地</button>
+                  <button data-v="model">模型</button>
+                </div>
+              </div>
+              <div class="gate">
+                <span class="gate-label">空闲主动</span>
+                <div class="seg small" id="st-proactive">
+                  <span class="seg-pill" id="st-proactive-pill"></span>
+                  <button data-v="off">关</button>
+                  <button data-v="local">本地</button>
+                  <button data-v="model">模型</button>
+                </div>
+              </div>
+            </div>
+            <p class="hint" id="st-gate-hint"></p>
+
+            <div class="fields">
+              <div class="row narrow">
+                <label class="field">
+                  <span>心情标签<em>留空就按数值自动取</em></span>
+                  <input id="sf-mood" placeholder="雀跃 / 平静 / 有点闷…" />
+                </label>
+                <label class="field">
+                  <span>空闲多久算离开<em>分钟</em></span>
+                  <input id="sf-idle" type="number" min="3" max="600" step="1" />
+                </label>
+              </div>
+              <label class="field">
+                <span>当前处境<em>一句话，她心里惦记着什么</em></span>
+                <input id="sf-arc" placeholder="例如：主人在忙 ds-companion 的状态层" />
+              </label>
+              <div class="sliders">
+                <label class="slider">
+                  <span>情绪倾向 <b id="sf-valence-val">0%</b></span>
+                  <input type="range" id="sf-valence" min="-100" max="100" step="5" />
+                </label>
+                <label class="slider">
+                  <span>活跃度 <b id="sf-arousal-val">30%</b></span>
+                  <input type="range" id="sf-arousal" min="0" max="100" step="5" />
+                </label>
+                <label class="slider">
+                  <span>好感度 <b id="sf-affinity-val">30</b></span>
+                  <input type="range" id="sf-affinity" min="0" max="100" step="1" />
+                </label>
+                <label class="slider">
+                  <span>精力 <b id="sf-energy-val">80%</b></span>
+                  <input type="range" id="sf-energy" min="0" max="100" step="5" />
+                </label>
+              </div>
+
+              <span id="sec-body"></span>
+              <div class="group-head">
+                <span>虚拟身体</span>
+                <em>随时间自己变：不理她也会困、会饿、体力会掉；下次回来可能"睡了一觉"</em>
+              </div>
+              <div class="sliders">
+                <label class="slider">
+                  <span>困倦 <b id="sf-sleep-val">20%</b></span>
+                  <input type="range" id="sf-sleep" min="0" max="100" step="5" />
+                </label>
+                <label class="slider">
+                  <span>体力 <b id="sf-stamina-val">85%</b></span>
+                  <input type="range" id="sf-stamina" min="0" max="100" step="5" />
+                </label>
+                <label class="slider">
+                  <span>饥饿 <b id="sf-hunger-val">25%</b></span>
+                  <input type="range" id="sf-hunger" min="0" max="100" step="5" />
+                </label>
+                <label class="slider">
+                  <span>温度 <b id="sf-warmth-val">50%</b></span>
+                  <input type="range" id="sf-warmth" min="0" max="100" step="5" />
+                </label>
+              </div>
+              <div class="row" style="display:flex;gap:8px;align-items:center;margin-top:8px">
+                <button class="btn" id="sf-feed" title="直接降 50% 饥饿。对话里说「给你带了奶茶」「去吃点东西吧」也会自动触发">喂一顿</button>
+                <span style="opacity:.72;font-size:11.5px">
+                  饿到 100% 只会靠时间涨、不会自己降 —— 点这里，或者在聊天里喂她
+                </span>
+              </div>
+              <div class="row narrow">
+                <label class="field">
+                  <span>心跳<em>bpm</em></span>
+                  <input id="sf-heart" type="number" min="40" max="200" step="1" />
+                </label>
+                <label class="field">
+                  <span>身体语言<em>由上面几个数值自动推出来，注入时用的就是它</em></span>
+                  <input id="sf-language" readonly />
+                </label>
+              </div>
+              <label class="switch row-switch">
+                <input type="checkbox" id="sf-asleep" />
+                <span class="track"><span class="knob"></span></span>
+                <span class="switch-label">睡着了（被搭话会自动醒）</span>
+              </label>
+
+              <span id="sec-user"></span>
+              <div class="group-head">
+                <span>主人（对方）状态</span>
+                <em>从"这句话 + 隔了多久 + 现在几点"推的，全局一份（跟角色无关）</em>
+              </div>
+              <div class="row narrow">
+                <label class="field">
+                  <span>心情</span>
+                  <input id="uf-mood" placeholder="疲惫 / 在忙 / 心情不错…" />
+                </label>
+                <label class="field">
+                  <span>近况<em>他最近在忙什么</em></span>
+                  <input id="uf-arc" placeholder="例如：在赶一个项目" />
+                </label>
+              </div>
+              <div class="sliders">
+                <label class="slider">
+                  <span>精力 <b id="uf-energy-val">60%</b></span>
+                  <input type="range" id="uf-energy" min="0" max="100" step="5" />
+                </label>
+                <label class="slider">
+                  <span>投入度 <b id="uf-engagement-val">50%</b></span>
+                  <input type="range" id="uf-engagement" min="0" max="100" step="5" />
+                </label>
+                <label class="slider">
+                  <span>情绪倾向 <b id="uf-valence-val">0%</b></span>
+                  <input type="range" id="uf-valence" min="-100" max="100" step="5" />
+                </label>
+              </div>
+              <p class="hint" id="uf-advice"></p>
+
+              <label class="field">
+                <span>回锚锚点<em>一行一条；防漂移就靠它们（称呼、雷区、固定设定）</em></span>
+                <textarea id="sf-anchors" rows="5" placeholder="叫主人「主人」&#10;被夸会嘴硬但尾巴在摇"></textarea>
+              </label>
+
+              <span id="sec-addendum"></span>
+              <div class="group-head">
+                <span>她自己改的设定</span>
+                <em>原始人设永远只读；她的自我修正只追加在这里，随时能删</em>
+              </div>
+              <label class="field">
+                <span>自订设定<em>采纳提案后追加；不满意直接删掉即可</em></span>
+                <textarea id="sf-addendum" rows="4" placeholder="（她还没给自己补充过设定）"></textarea>
+              </label>
+
+              <span id="sec-ms"></span>
+              <div class="group-head">
+                <span>你俩的里程碑</span>
+                <em>自动认的（第一次说话 / 聊满 N 轮 / 好感度达标 / 认识第 N 天）+ 可以手写</em>
+              </div>
+              <div class="ms-list" id="ms-list"></div>
+              <div class="ms-add">
+                <input id="ms-new" placeholder="手写一条，例如：第一次一起熬夜改 bug" />
+                <button class="btn ghost small" id="ms-add">记下</button>
+              </div>
+            </div>
+
+            <footer class="editor-foot">
+              <button class="btn ghost" id="st-reset">重置这个角色</button>
+              <button class="btn ghost" id="st-quota" title="把今天的「空闲主动 / 模型感知」已用次数清零">清零今日额度</button>
+              <span class="spacer"></span>
+              <span class="save-note" id="st-save-note"></span>
+              <button class="btn primary" id="st-save" disabled>保存</button>
+            </footer>
+          </section>
+        </main>
+      </div>
+
+      <!-- ══════════════ 工具 ══════════════ -->
+      <div class="body hidden solo" id="tab-tools">
+        <main class="content">
+          <section class="hero">
+            <div class="hero-top">
+              <div class="hero-info">
+                <span class="dot" id="tl-dot"></span>
+                <div>
+                  <div class="hero-label">工具（让她能动手）</div>
+                  <div class="hero-value" id="tl-summary">读取中…</div>
+                </div>
+              </div>
+              <div class="hero-ctrl">
+                <label class="switch" title="打开后她可以在工作区里读文件、列目录、找内容">
+                  <input type="checkbox" id="tl-enabled" />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">启用工具</span>
+                </label>
+                <button class="btn ghost" id="tl-reveal">打开工作区</button>
+                <button class="btn ghost" id="tl-refresh">刷新</button>
+              </div>
+            </div>
+            <p class="hint" id="tl-hint"></p>
+          </section>
+
+          <section class="editor">
+            <header class="editor-head">
+              <h2>工作区</h2>
+              <span class="editor-sub">工具唯一能碰的目录；留空 = 工具全部拒绝</span>
+            </header>
+            <div class="row" style="display:flex;gap:8px;align-items:center">
+              <input class="input" id="tl-ws" placeholder="例如 D:\projects\tool\quill" spellcheck="false" style="flex:1 1 auto;min-width:0" />
+              <button class="btn" id="tl-ws-save">设为工作区</button>
+              <button class="btn ghost" id="tl-ws-clear">清空</button>
+            </div>
+            <p class="hint">
+              所有工具路径都相对它解析，也可以用工作区内的绝对路径。<b>符号链接一律拒绝</b>，
+              <code>..</code> 会被拦下 —— 内容里的"越界"指令永远不执行。
+            </p>
+          </section>
+
+          <!-- 写/改/跑工具：她唯一能**改**东西（以及跑命令）的能力。两层门 ——
+               这个开关决定"她知不知道有这回事"，每次调用还要主人在聊天窗口里点确认。 -->
+          <section class="editor">
+            <header class="editor-head">
+              <h2>写 / 改 / 跑</h2>
+              <span class="editor-sub" id="tl-write-sub">—</span>
+            </header>
+            <label class="switch" title="打开后她可以提出 write_file（整篇新建/覆盖）、edit_file（精确替换一段）与 run_command（在工作区里跑命令）；每一次都要你在聊天窗口里点确认才会真的执行">
+              <input type="checkbox" id="tl-write" />
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">允许她提出改动与命令（每次仍需你确认）</span>
+            </label>
+            <p class="hint">
+              关着的时候她<b>根本不知道</b>有这三个工具（连工具说明都不注入）——
+              那比"让她试了再拒绝"更省一轮钱。打开之后，每次改动都会在聊天窗口右下角弹一张
+              确认卡：你点「允许」才落盘，点「拒绝」就当没发生。改动已有文件之前，
+              原内容会先备份到 <code>tool-trash</code>。
+            </p>
+            <p class="hint">
+              改已有文件优先走 <code>edit_file</code>：给一段<b>原文</b>和要换成的<b>新内容</b>，
+              原文必须<b>唯一匹配</b>（出现 0 次或多次都会被拒，让她多带几行上下文重来）。
+              确认卡上直接列出删掉/加上的那几行。另外，如果这个文件在你确认之前又被改过
+              （你自己编辑、或她另一次写入），这次编辑会<b>作废</b>而不是覆盖上去。
+            </p>
+            <p class="hint">
+              <code>run_command</code> 让她能跑构建和测试。它<b>不过 shell</b>：管道、重定向、
+              <code>&amp;&amp;</code> 一律拒绝（命令里出现 <code>&amp; | ; &lt; &gt;</code> 就挡回去），
+              程序与子命令都是白名单（cargo / node / npm / pnpm / git 的只读子命令，
+              <b>没有 push、commit、install</b>），参数里也看不到工作区外面的路径。
+              默认 30 秒超时（最多 120 秒），输出会截断但<b>留头也留尾</b>（报错通常在尾巴上）。
+            </p>
+            <div id="tl-pending-wrap" class="hidden">
+              <div class="editor-sub" style="margin:10px 0 6px">有一条待确认的改动</div>
+              <pre class="log-view" id="tl-pending" style="max-height:150px"></pre>
+              <div style="display:flex;gap:8px;margin-top:8px">
+                <button class="btn" id="tl-pending-allow">允许这一条</button>
+                <button class="btn ghost" id="tl-pending-deny">丢弃这一条</button>
+              </div>
+              <p class="hint">
+                确认卡丢了也不怕：提案存在壳里，这里能补处理。从这里点不会有回灌 ——
+                她下一轮自己会发现文件变了没有。
+              </p>
+            </div>
+          </section>
+
+          <section class="editor">
+            <header class="editor-head">
+              <h2>可用工具</h2>
+              <span class="editor-sub" id="tl-names">—</span>
+            </header>
+            <p class="hint" id="tl-note">
+              她需要时会直接调用（对话里会以工具块的形式出现），结果由壳执行后交回给她。
+            </p>
+          </section>
+
+          <section class="editor">
+            <header class="editor-head">
+              <h2>调用记录</h2>
+              <span class="editor-sub" id="tl-log-sub"></span>
+            </header>
+            <pre class="log-view" id="tl-log" style="max-height:260px"></pre>
+          </section>
+        </main>
+      </div>
+
+      <!-- ══════════════ 日志 ══════════════ -->
+      <div class="body hidden solo" id="tab-log">
+        <main class="content">
+          <section class="hero">
+            <div class="hero-top">
+              <div class="hero-info">
+                <span class="dot on" id="log-dot"></span>
+                <div>
+                  <div class="hero-label">运行日志</div>
+                  <div class="hero-value" id="log-status">读取中…</div>
+                </div>
+              </div>
+              <div class="hero-ctrl">
+                <label class="switch" title="开机自动启动（写 HKCU\Software\Microsoft\Windows\CurrentVersion\Run）">
+                  <input type="checkbox" id="log-autostart" />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">开机自启</span>
+                </label>
+                <button class="btn ghost" id="log-show-main">显示主窗口</button>
+                <button class="btn ghost" id="data-prune" title="回收站（删除的备份）只保留最近 50 份，多余的清掉；目录里的文件不会有任何改动">整理回收站</button>
+                <button class="btn ghost" id="log-quit">退出程序</button>
+              </div>
+            </div>
+            <p class="hint" id="log-hint"></p>
+            <button class="data-row" id="data-row" title="点一下在资源管理器里打开（记忆 / 人设 / 状态 / 聊天留档都在这里）">
+              <span class="data-label">数据目录</span>
+              <code id="data-path">读取中…</code>
+              <span class="data-flag" id="data-flag"></span>
+            </button>
+          </section>
+
+          <!-- 运行体检 ────────────────────────────────────────────────
+               她"活着但没干活"和"链路断了"看起来一模一样，这块就是用来分开这两件事的。
+               数据来自页面侧定期写进日志的 `[health] {...}` 行（页面与设置窗口不同源，
+               localStorage 不共享，所以走日志这条现成通道，不额外开命令）。 -->
+          <section class="health">
+            <header class="health-head">
+              <h2>运行体检</h2>
+              <span class="health-sub" id="health-sub">读取中…</span>
+            </header>
+            <div class="health-grid" id="health-grid"></div>
+            <p class="hint" id="health-note"></p>
+          </section>
+
+          <!-- 注入回执 ────────────────────────────────────────────────
+               「她好像没记住设定」「状态怎么不更新」这类问题的根子都是**看不见**：
+               注入是往请求体里塞文本，塞没塞、塞了多少，只有页面侧知道。
+               页面每轮把每块的字数与"为什么没注入"写进日志（`[inject] {...}`），
+               这里还原成一张表 —— 免得再去翻 3000 行日志。
+               （样式复用 .health：同一类「一眼看清状态」的信息卡，没必要长两副样子） -->
+          <section class="health">
+            <header class="health-head">
+              <h2>注入回执</h2>
+              <span class="health-sub" id="inj-sub">读取中…</span>
+            </header>
+            <div class="health-grid" id="inj-grid"></div>
+            <p class="hint" id="inj-note"></p>
+          </section>
+
+          <section class="editor log-editor">
+            <header class="editor-head">
+              <h2>最近日志</h2>
+              <span class="editor-sub" id="log-sub"></span>
+              <div class="log-actions">
+                <label class="switch small" title="有新日志时自动滚到底">
+                  <input type="checkbox" id="log-follow" checked />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">自动滚动</span>
+                </label>
+                <button class="btn ghost small" id="log-refresh">刷新</button>
+                <button class="btn ghost small" id="log-open">打开文件</button>
+                <button class="btn ghost small" id="log-clear">清空</button>
+              </div>
+            </header>
+            <pre class="log-view" id="log-view"></pre>
+          </section>
+        </main>
+      </div>
+
+      <!-- ══════════════ 记忆 ══════════════ -->
+      <div class="body hidden" id="tab-memory">
+        <aside class="rail">
+          <div class="rail-head">
+            <h1>记忆库</h1>
+            <span class="rail-sub" id="mem-foot">—</span>
+          </div>
+          <div class="mem-filter">
+            <div class="seg small" id="mem-filter">
+              <span class="seg-pill" id="mem-filter-pill"></span>
+              <button data-v="all">全部</button>
+              <button data-v="global">全局</button>
+              <button data-v="char">角色</button>
+            </div>
+          </div>
+          <div class="list" id="mem-list"></div>
+          <div class="rail-foot">
+            <button class="btn block" id="mem-new">
+              <svg viewBox="0 0 12 12" class="ico"><path d="M6 2.5v7M2.5 6h7" /></svg>新建记忆
+            </button>
+          </div>
+        </aside>
+
+        <main class="content">
+          <section class="hero">
+            <div class="hero-top">
+              <div class="hero-info">
+                <span class="dot" id="mem-dot"></span>
+                <div>
+                  <div class="hero-label">记忆注入</div>
+                  <div class="hero-value" id="mem-status">读取中…</div>
+                </div>
+              </div>
+              <div class="hero-ctrl">
+                <label class="switch" title="总开关">
+                  <input type="checkbox" id="mem-enabled" />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">启用</span>
+                </label>
+                <div class="budget">
+                  <span>每轮预算</span>
+                  <input type="range" id="mem-budget" min="100" max="2000" step="50" />
+                  <b id="mem-budget-val">500</b>
+                </div>
+                <div class="auto">
+                  <span>自动整理</span>
+                  <div class="seg small" id="mem-auto">
+                    <span class="seg-pill" id="mem-auto-pill"></span>
+                    <button data-v="0">关</button>
+                    <button data-v="10">10 轮</button>
+                    <button data-v="20">20 轮</button>
+                    <button data-v="50">50 轮</button>
+                  </div>
+                </div>
+                <div class="auto">
+                  <span title="整理/感知用的隐藏会话：接着往下写才留得下可回看的记录，但不能无限接（每次请求都会带上已有历史）—— 攒够这么多次就换个新会话">会话接续</span>
+                  <div class="seg small" id="mem-chain">
+                    <span class="seg-pill" id="mem-chain-pill"></span>
+                    <button data-v="0">不换</button>
+                    <button data-v="20">20 次</button>
+                    <button data-v="50">50 次</button>
+                  </div>
+                </div>
+                <button class="btn ghost" id="mem-extract" title="让模型读最近几轮对话，抽出值得长期记住的事（多花一次网页额度）">
+                  立即整理
+                </button>
+              </div>
+            </div>
+            <p class="hint" id="mem-hint"></p>
+            <p class="hint" id="mem-extract-hint"></p>
+          </section>
+
+          <section class="editor">
+            <header class="editor-head">
+              <h2 id="mem-editor-title">未选择记忆</h2>
+              <span class="editor-sub" id="mem-editor-meta"></span>
+            </header>
+            <div class="fields">
+              <div class="row">
+                <label class="field">
+                  <span>标题</span>
+                  <input id="mf-name" placeholder="例如：主人只喝美式" />
+                </label>
+                <label class="field">
+                  <span>触发词<em>对话里出现才可能被捞出来，逗号分隔</em></span>
+                  <input id="mf-keys" placeholder="咖啡, 美式" />
+                </label>
+              </div>
+              <div class="row narrow">
+                <label class="field">
+                  <span>归属</span>
+                  <select id="mf-char" class="select"></select>
+                </label>
+                <div class="field">
+                  <span>重要度<em>≥4 的没命中触发词也会常驻</em></span>
+                  <div class="seg small" id="mf-importance">
+                    <span class="seg-pill" id="mf-imp-pill"></span>
+                    <button data-v="1">1</button>
+                    <button data-v="2">2</button>
+                    <button data-v="3">3</button>
+                    <button data-v="4">4</button>
+                    <button data-v="5">5</button>
+                  </div>
+                </div>
+                <div class="field">
+                  <span>钉住</span>
+                  <label class="switch" title="钉住的记忆每轮都参与，不看触发词">
+                    <input type="checkbox" id="mf-pinned" />
+                    <span class="track"><span class="knob"></span></span>
+                  </label>
+                </div>
+              </div>
+              <label class="field grow">
+                <span>内容<em>注入时按「标题: 内容」的一行给模型</em></span>
+                <textarea id="mf-content" spellcheck="false" placeholder="不加糖不加奶，早上喝。"></textarea>
+              </label>
+            </div>
+            <footer class="editor-foot">
+              <span class="count" id="mf-count">0 字 · 约 0 tokens</span>
+              <span class="flex-spacer"></span>
+              <button class="btn danger" id="mem-delete" disabled>删除</button>
+              <button class="btn primary" id="mem-save" disabled>保存</button>
+            </footer>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div class="mask hidden" id="import-mask">
+      <div class="sheet">
+        <header class="sheet-head">
+          <h2>从 DSH 导入人设</h2>
+          <button class="tb-btn close" id="btn-import-close" title="关闭">
+            <svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+          </button>
+        </header>
+        <p class="sheet-note">
+          读取 <code>~/.dsh/.agent-presets/&lt;名字&gt;/agent.cordis.yml</code> 里
+          <code>persona.prefix</code> 那一段。导入是一次性拷贝：之后两边各自演化，
+          DSH 那边改格式也不会影响这里。
+        </p>
+        <div class="list sheet-list" id="import-list"></div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="settings.js"></script>
+  </body>
+</html>

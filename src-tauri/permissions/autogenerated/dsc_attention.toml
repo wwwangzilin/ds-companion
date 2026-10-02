@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-attention"
+description = "Enables the dsc_attention command without any pre-configured scope."
+commands.allow = ["dsc_attention"]
+
+[[permission]]
+identifier = "deny-dsc-attention"
+description = "Denies the dsc_attention command without any pre-configured scope."
+commands.deny = ["dsc_attention"]

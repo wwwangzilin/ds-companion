@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tools-log-tail"
+description = "Enables the tools_log_tail command without any pre-configured scope."
+commands.allow = ["tools_log_tail"]
+
+[[permission]]
+identifier = "deny-tools-log-tail"
+description = "Denies the tools_log_tail command without any pre-configured scope."
+commands.deny = ["tools_log_tail"]
