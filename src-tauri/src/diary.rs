@@ -144,6 +144,52 @@ pub fn days(character_id: &str) -> Vec<String> {
     out
 }
 
+/// 设置页那一栏用的一天：哪天 + 她写了多少字。
+///
+/// 【为什么不把正文一起带上】列表要的是"有哪些天"，正文点开再取一次 ——
+/// 攒到几十天时没必要每次都把全部正文塞进 IPC（Quill 那边在这上面吃过亏：
+/// MB 级文本经 IPC JSON 化能到 1.3 秒）。
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DiaryDay {
+    pub day: String,
+    /// 正文多少字（**不含标题行** —— 标题是文件名重复一遍，不该算成她写的）
+    pub chars: usize,
+}
+
+/// 正文部分：掐掉第一行的 `# 日期` 与首尾空白。
+///
+/// 【为什么要它】文件里那行标题是给"用记事本直接打开也看得懂"用的，而设置页已经把
+/// 日期摆在旁边了 —— 再把 `# 2026-10-01` 原样显示出来就只是难看（验收脚本抓到的）。
+///
+/// 【为什么只此一处】文件布局由这里一个人说了算：`body_chars`（列表里那个"N 字"）
+/// 和设置页显示的正文本必须是同一段裁法，否则"72 字"和眼睛看到的内容对不上。
+pub fn body_of(text: &str) -> &str {
+    let t = text.trim();
+    match t.strip_prefix("# ") {
+        Some(rest) => rest.splitn(2, '\n').nth(1).unwrap_or("").trim(),
+        None => t,
+    }
+}
+
+/// 数正文（用同一段裁剪，见 `body_of`）。
+fn body_chars(text: &str) -> usize {
+    body_of(text).chars().count()
+}
+
+/// 有日记的日子 + 每天多少字（设置页「她的日记」）。
+pub fn list(character_id: &str) -> Vec<DiaryDay> {
+    days(character_id)
+        .into_iter()
+        .map(|day| {
+            let chars = read_day(character_id, &day)
+                .map(|t| body_chars(&t))
+                .unwrap_or(0);
+            DiaryDay { day, chars }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +260,41 @@ mod tests {
     fn pick_day_skips_malformed() {
         let daily = vec![pt("2026-10-01", 3), pt("../../evil", 9), pt("2026/10/02", 4)];
         assert_eq!(pick_day(&daily, "2026-10-03", "").unwrap().day, "2026-10-01");
+    }
+
+    /// 数的是正文：标题行是文件名重复一遍，不该算成她写的字。
+    ///
+    /// 【为什么拿字面量比，而不是写个数字】第一版就是硬编码的期望值，而我数错了 ——
+    /// 断言红了一次才发现是断言错、不是代码错。拿"应该等于的那段字"对比，
+    /// 读的人一眼能自己数，也不会因为我手抖就冤枉代码。
+    #[test]
+    fn body_chars_skips_title() {
+        assert_eq!(
+            body_chars("# 2026-10-02\n\n他今天很烦。\n"),
+            "他今天很烦。".chars().count(),
+            "标题行不该算进去",
+        );
+        // 追加过的（中间有条分隔线）：连着分隔线一起算，反正它真在文件里
+        assert_eq!(
+            body_chars("# 2026-10-02\n\n甲\n\n---\n\n乙\n"),
+            "甲\n\n---\n\n乙".chars().count(),
+        );
+        // 没有标题行的一律照数（手写进去的文件也不会被算少）
+        assert_eq!(
+            body_chars("没有标题的一行\n"),
+            "没有标题的一行".chars().count(),
+        );
+        assert_eq!(body_chars("  \n "), 0, "全空白 = 0 字");
+        assert_eq!(body_chars("# 2026-10-02\n"), 0, "只有标题 = 0 字");
+    }
+
+    /// 设置页拿到的是**正文**，不是整份文件（那个 `# 日期` 只是给记事本看的）。
+    #[test]
+    fn body_of_drops_the_title_line() {
+        assert_eq!(body_of("# 2026-10-02\n\n他今天很烦。\n"), "他今天很烦。");
+        assert_eq!(body_of("没有标题\n"), "没有标题", "手写的文件照样能读");
+        assert_eq!(body_of("# 2026-10-02\n"), "", "只有标题就是空的");
+        assert_eq!(body_of("  \n"), "");
     }
 
     /// 今天不知道 → 不写（判断不了"这天过完没有"）。

@@ -87,6 +87,9 @@ fn main() {
             // 她自己的日记：页面侧让模型写完、把那段话送回来落盘。
             // 写盘留在壳里 —— 远程页面不该有任何文件系统能力。
             "dsc_diary_save",
+            // 设置页翻日记（只读两条）
+            "dsc_diary_days",
+            "dsc_diary_read",
         ])),
     )
     .expect("failed to run tauri-build");

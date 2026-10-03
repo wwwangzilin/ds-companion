@@ -520,6 +520,8 @@ function setTab(name) {
       renderStAll();
       // 日报跟着选中的角色走（换角色卡片时"今天"也要换人）
       refreshToday();
+      // 日记也是（而且它只在进这个页签时读一次盘就够了）
+      syncDiary();
     })().catch(fail);
   if (name === 'memory') reloadMemories().catch(fail);
   if (name === 'tools') refreshTools().catch(fail);
@@ -915,6 +917,109 @@ function renderCurve() {
   }
 }
 
+// ── 她的日记（一天一篇，她自己写）──────────────────────────────────
+//
+// 【为什么这里必须能看】日记是她的私人物品：不注入回对话、不进记忆库 ——
+// 那它就得有个"主人能翻"的地方，否则写了也没人看得见。
+// 数据全部来自壳（`dsc_diary_days` / `dsc_diary_read`），页面不碰文件系统。
+var diaryDays = [];
+var diaryOpen = '';
+// 这份列表是**哪个角色**的：角色没变就不用反复读盘
+var diaryFor = '';
+// 【为什么要单独一个「拉过了没有」】不能拿 `diaryFor === ''` 当「还没拉过」：
+// 全新安装（没有自定义人设）时 `effectiveCharacterId()` 可能就是空串，
+// 那样第一次同步会被判成「角色没变」直接 return —— 她明明写了日记，卡片却永远空着。
+var diaryLoaded = false;
+
+function renderDiary() {
+  const box = $('diary-days');
+  if (!box) return;
+  const sub = $('diary-sub');
+  const hint = $('diary-hint');
+  const body = $('diary-body');
+  const who = (personas.find((p) => p.id === effectiveCharacterId()) || {}).name || '她';
+
+  if (!diaryDays.length) {
+    box.innerHTML = '<div class="diary-empty">' + escapeHtml(who) + '还没写过日记</div>';
+    if (body) body.textContent = '';
+    if (sub) sub.textContent = '还没有';
+    if (hint) {
+      hint.textContent =
+        '一天一篇：第二天第一次聊天时回顾前一天，写完就躺在数据目录的 diary/ 里 —— 不注回对话、不进记忆。';
+    }
+    return;
+  }
+
+  box.innerHTML = diaryDays
+    .map(
+      (d) =>
+        '<button class="diary-day' + (d.day === diaryOpen ? ' on' : '') + '" data-day="' +
+        escapeHtml(d.day) + '"><span>' + escapeHtml(String(d.day).slice(5)) +
+        '</span><span class="dc">' + (d.chars || 0) + ' 字</span></button>',
+    )
+    .join('');
+  for (const b of box.querySelectorAll('.diary-day')) {
+    b.addEventListener('click', () => openDiaryDay(b.dataset.day));
+  }
+
+  const total = diaryDays.reduce((n, d) => n + (d.chars || 0), 0);
+  if (sub) sub.textContent = diaryDays.length + ' 篇 · 共 ' + total + ' 字';
+  if (hint) {
+    hint.textContent =
+      (diaryOpen || diaryDays[0].day) + '　点某一天看她那天写了什么。这些字只在这里和 diary/ 目录里。';
+  }
+}
+
+async function openDiaryDay(day) {
+  if (!day) return;
+  diaryOpen = day;
+  for (const b of document.querySelectorAll('#diary-days .diary-day')) {
+    b.classList.toggle('on', b.dataset.day === day);
+  }
+  const hint = $('diary-hint');
+  if (hint) hint.textContent = day + '　点某一天看她那天写了什么。这些字只在这里和 diary/ 目录里。';
+  const body = $('diary-body');
+  if (!body) return;
+  body.textContent = '读…';
+  try {
+    body.textContent = String((await invoke('dsc_diary_read', { day })) || '').trim() || '（这天是空的）';
+  } catch (e) {
+    body.textContent = '读不出来：' + String(e && e.message ? e.message : e);
+  }
+}
+
+/** 拉一次列表。角色被换掉时也要重来（那是壳按 config 解析的，跟页面选中谁无关）。
+ *
+ * 【默认摊开最新那篇为什么放在这里、不放在 renderDiary】renderDiary 会被反复调用
+ *（每次重画角色列表都会来一次），而 openDiaryDay 是一次真实的读盘请求 ——
+ * 放进 renderDiary 等于每重画一次就多读一次盘。所以「摊开哪篇」只在真拉了新列表之后决定。
+ */
+async function refreshDiary() {
+  try {
+    diaryDays = (await invoke('dsc_diary_days')) || [];
+  } catch (e) {
+    diaryDays = [];
+  }
+  diaryLoaded = true;
+  if (!diaryOpen || !diaryDays.some((d) => d.day === diaryOpen)) {
+    diaryOpen = diaryDays.length ? diaryDays[0].day : '';
+  }
+  renderDiary();
+  if (diaryOpen) openDiaryDay(diaryOpen);
+}
+
+/** 跟当前角色同步。角色没变就只重画（人设名可能刚加载完），不重新读盘。 */
+function syncDiary() {
+  const cid = effectiveCharacterId();
+  if (diaryLoaded && cid === diaryFor) {
+    renderDiary();
+    return;
+  }
+  diaryFor = cid;
+  diaryOpen = '';
+  refreshDiary();
+}
+
 function renderStList() {
   const box = $('st-list');
   box.innerHTML = '';
@@ -960,6 +1065,8 @@ function renderStList() {
   $('st-foot').textContent = `${personas.length} 个角色`;
   // 角色列表变了，曲线跟着换人
   renderCurve();
+  // 日记也跟着换人（内部会判"还是同一个角色"就不重复读盘）
+  syncDiary();
 }
 
 function renderStSummary() {
@@ -2183,6 +2290,11 @@ for (const b of document.querySelectorAll('.tb-tab')) {
   b.addEventListener('click', () => setTab(b.dataset.tab));
 }
 $('today-refresh').addEventListener('click', () => refreshToday());
+$('diary-refresh').addEventListener('click', () => {
+  // 强制重来：她刚在她那边写完一篇的话，这里得看得见
+  diaryLoaded = false;
+  syncDiary();
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') $('import-mask').classList.add('hidden');

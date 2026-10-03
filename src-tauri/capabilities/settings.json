@@ -66,6 +66,8 @@
     "allow-tools-log-tail",
     "allow-tools-set-write-enabled",
     "allow-tool-pending-list",
-    "allow-dsc-tool-proposal-decide"
+    "allow-dsc-tool-proposal-decide",
+    "allow-dsc-diary-days",
+    "allow-dsc-diary-read"
   ]
 }

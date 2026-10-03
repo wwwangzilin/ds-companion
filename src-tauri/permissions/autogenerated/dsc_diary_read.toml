@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-diary-read"
+description = "Enables the dsc_diary_read command without any pre-configured scope."
+commands.allow = ["dsc_diary_read"]
+
+[[permission]]
+identifier = "deny-dsc-diary-read"
+description = "Denies the dsc_diary_read command without any pre-configured scope."
+commands.deny = ["dsc_diary_read"]

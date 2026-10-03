@@ -63,6 +63,19 @@ fn writes_appends_reads_and_lists_one_file_per_day() {
         vec!["2026-10-03".to_string(), "2026-10-02".to_string()],
     );
 
+    // ④b 设置页那一栏：哪天 + 多少字（**不含标题行**，标题是文件名重复一遍）
+    let listed = diary::list("dsc-luna");
+    assert_eq!(listed.len(), 2, "两天该有两条：{listed:?}");
+    assert_eq!(listed[0].day, "2026-10-03");
+    assert!(listed[0].chars > 0, "字数要真的数出来：{:?}", listed[0]);
+    let raw = diary::read_day("dsc-luna", "2026-10-02").unwrap();
+    assert!(
+        listed[1].chars > 0 && listed[1].chars < raw.chars().count(),
+        "算的是正文，不能把标题也算进去（{} vs 整文件 {}）",
+        listed[1].chars,
+        raw.chars().count(),
+    );
+
     // ⑤ 没写过的日子 → None（不是 panic，也不是空串）；角色之间互不串门
     assert!(diary::read_day("dsc-luna", "2026-01-01").is_none());
     assert!(diary::read_day("dsc-other", "2026-10-02").is_none());

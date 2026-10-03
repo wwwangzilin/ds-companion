@@ -73,6 +73,76 @@
   text-align: center;
 }
 
+/* ── 她的日记（一天一篇，她自己写）──────────────────────────────────
+   日期做成小按钮排成一条，正文单独一块：一天的正文只有几十到一百多字，
+   但攒到几十天时不该一次全铺出来（所以是"点哪天看哪天"而不是长列表）。 */
+.diary-wrap {
+  margin-top: 4px;
+}
+
+.diary-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.diary-empty {
+  color: var(--text-3);
+  font-size: 12.5px;
+  padding: 16px 0;
+}
+
+.diary-day {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s, color 0.16s;
+}
+
+.diary-day:hover {
+  border-color: var(--line-2);
+  color: var(--text);
+}
+
+.diary-day.on {
+  border-color: var(--p);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.diary-day .dc {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.diary-body {
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diary-body:empty {
+  display: none;
+}
+
 html,
 body {
   height: 100%;

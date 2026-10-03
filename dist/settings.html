@@ -158,6 +158,24 @@
             <p class="hint" id="curve-hint">—</p>
           </section>
 
+          <!-- 「她的日记」：一天一篇，她自己写给自己看。
+               放在曲线下面：曲线是"客观走势"，日记是"她自己的话"。
+               它不注入回对话、不进记忆库 —— 所以这里是她唯一被读到的地方。 -->
+          <section class="editor" id="diary-card">
+            <header class="editor-head">
+              <h2>她的日记</h2>
+              <span class="editor-sub" id="diary-sub">—</span>
+            </header>
+            <div class="diary-wrap">
+              <div class="diary-days" id="diary-days"></div>
+              <div class="diary-body" id="diary-body"></div>
+            </div>
+            <p class="hint" id="diary-hint">—</p>
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <button class="btn ghost" id="diary-refresh">刷新</button>
+            </div>
+          </section>
+
           <section class="hero">
             <div class="hero-top">
               <div class="hero-info">

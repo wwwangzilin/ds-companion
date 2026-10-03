@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-diary-days"
+description = "Enables the dsc_diary_days command without any pre-configured scope."
+commands.allow = ["dsc_diary_days"]
+
+[[permission]]
+identifier = "deny-dsc-diary-days"
+description = "Denies the dsc_diary_days command without any pre-configured scope."
+commands.deny = ["dsc_diary_days"]

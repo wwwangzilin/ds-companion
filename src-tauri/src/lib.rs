@@ -384,6 +384,38 @@ fn active_character() -> String {
     personas::active_character_id(config::load().active_persona.as_deref())
 }
 
+/// 列出她有日记的日子（设置页「她的日记」那一栏）。
+///
+/// 【为什么让壳来列】注入脚本跑在远程页面里，不该有任何文件系统能力；设置页虽是本地的，
+/// 也只该拿到"有哪些天、多少字"，正文点开再单独取一次。角色 id 照旧由壳解析。
+#[tauri::command]
+fn dsc_diary_days() -> Vec<diary::DiaryDay> {
+    let cid = active_character();
+    if cid.is_empty() {
+        return Vec::new();
+    }
+    diary::list(&cid)
+}
+
+/// 读某一天的日记**正文**（设置页点开某天时取）。
+///
+/// 【为什么不是整份文件】文件里那行 `# 日期` 是给记事本看的，设置页的日期就摆在
+/// 旁边 —— 原样显示出来就是个难看的 `#`（验收脚本抓到的）。裁剪由 `diary::body_of`
+/// 一个人说了算，跟列表里那个"N 字"用同一段，免得数字和内容对不上。
+///
+/// 【为什么不是返回空串】"没有这一天的日记"和"这一天的日记是空的"是两回事 ——
+/// 前者要说清楚（页面得显示"读不出来"），后者本来就不该存在（写盘那层拒空正文）。
+#[tauri::command]
+fn dsc_diary_read(day: String) -> Result<String, String> {
+    let cid = active_character();
+    if cid.is_empty() {
+        return Err("当前没启用角色".to_string());
+    }
+    diary::read_day(&cid, &day)
+        .map(|t| diary::body_of(&t).to_string())
+        .ok_or_else(|| format!("没有 {day} 的日记"))
+}
+
 /// 把这一天的日记落盘（页面侧让模型写完，再把它送回来）。
 ///
 /// 【为什么写盘必须留在壳里】注入脚本跑在**远程页面**里，它的能力只有
@@ -2115,6 +2147,8 @@ pub fn run() {
             memory_touch,
             memory_ingest,
             memory_extract,
+            dsc_diary_days,
+            dsc_diary_read,
             dsc_diary_save,
             dsc_turn_report,
             dsc_sense_reserve,
