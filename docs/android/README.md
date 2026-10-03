@@ -2,7 +2,7 @@
 
 本目录只做一件事：**在写一周代码之前，先证明 Android 上能拿到和桌面端等价的注入时机。**
 
-结论先给：**能，而且比预想的好。**下面是源码实证，不是推测。
+结论：**能，而且已经在真机上验证通过了**（2026-10-03，Galaxy S24 Ultra / Android 16 / WebView 142，实测数据在第 6 节）。下面是源码实证与实测记录，不是推测。
 
 ---
 
@@ -125,7 +125,7 @@ androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
 
 | 桌面端 | Android 端 |
 |---|---|
-| 注入脚本 9 个文件 | 原样复用（都是纯 JS，无平台 API） |
+| 注入脚本 9 个文件 | 原样复用（都是纯 JS，无平台 API），但**必须先改成幂等**（见第 6 节的实测发现） |
 | `run_command` 工具 | **去掉**（手机上无意义），保留 `list_dir`/`read_file`/`find`/`write_file`/`edit_file` |
 | 托盘菜单 + 角标 | 通知栏常驻通知 + 快捷操作 |
 | 进程常驻（窗口关掉还在） | **前台服务**（`FOREGROUND_SERVICE` + 通知），并引导用户关闭电池优化 |
@@ -137,11 +137,41 @@ androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
 
 ---
 
-## 6. 实测记录（填这里）
+## 6. 实测记录
 
-| 日期 | 设备 / ROM | WebView 版本 | documentStart | xhrNative | 首个请求延迟 | 结论 |
-|---|---|---|---|---|---|---|
-| — | — | — | — | — | — | 待测 |
+### 2026-10-03 · Samsung SM-S9480（Galaxy S24 Ultra 国行）· Android 16 / API 36 · WebView 142.0.7444.171
+
+**结论：通过，B 路线成立。**
+
+| 判据 | 实测值 | 期望 | 结果 |
+|---|---|---|---|
+| `inject` 行 `xhrNative` | `true` | `true` | ✅ |
+| `inject` 行 `fetchNative` | `true` | `true` | ✅ |
+| `inject` 行 `readyState` | `loading` | `loading` | ✅ |
+| `inject` 行 `htmlLen` | `0` | 越小越好 | ✅ 文档还是空的 |
+| `inject` 行 `hasBody` | `false` | `false` | ✅ |
+| `firstXhr.msAfterInject` | `1376` ms | 越大越安全 | ✅ 余量充足 |
+| 首个请求 | `GET /api/v0/client/settings` | 应早于 completion | ✅ |
+
+原始 logcat（`adb logcat | Select-String dsc-poc`）：
+
+```
+[dsc-poc] inject {"readyState":"loading","hasDoc":true,"hasBody":false,"htmlLen":0,"xhrNative":true,"fetchNative":true}
+[dsc-poc] inject {"readyState":"loading","hasDoc":true,"hasBody":false,"htmlLen":8390,"xhrNative":false,"fetchNative":false}
+[dsc-poc] first-xhr {"msAfterInject":1376,"method":"GET","url":"/api/v0/client/settings?...","bodyLen":0,"bodyHasPrompt":false}
+```
+
+### ⚠️ 实测发现：Android 上注入会跑**两次**
+
+第一行 `htmlLen: 0` / `xhrNative: true` 是 document-start；第二行 `htmlLen: 8390` / `xhrNative: false` 是**几百毫秒后的第二次注入**——那个 `false` 是第一次注入自己挂的钩子造成的，不是页面脚本。
+
+这与源码的读法不符：`RustWebView.kt:28-35`（`addDocumentStartJavaScript`）与 `RustWebViewClient.kt:62-71`（`onPageStarted` + `evaluateJavascript`）看起来是 if/else 二选一，**实际两个机制都会被触发**。
+
+**迁移硬要求：注入脚本必须幂等。** 每次执行都要能安全重入——不能重复包装 `XMLHttpRequest.prototype`、不能重置已有状态。否则同一个 `body.prompt` 会被改写两次（第一次注入加人设、第二次再加一遍），这是真会出事的 bug。
+
+### 未覆盖的部分
+
+手机 WebView 没有 DeepSeek 登录态（页面跳到 `/sign_in`），所以本轮**没有观测到 completion 请求**，也没有验证「改写 `body.prompt` 后服务端真的收到」。时机判据已满足，这一步等有登录态时补。
 
 ---
 
