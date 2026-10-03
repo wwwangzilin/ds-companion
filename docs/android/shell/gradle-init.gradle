@@ -1,0 +1,30 @@
+// 强制所有 Gradle 仓库走阿里云镜像。
+//
+// 为什么需要：本机（S302/Clash 环境）对 google() / mavenCentral() / plugins.gradle.org
+// 的直连会长时间挂住——实测 Gradle daemon 卡在一条 fake-ip 连接上 25 分钟，
+// CPU 只涨 4 秒、日志停在 "Calculating task graph"，纯等待。
+//
+// 为什么不能用改项目文件的办法：`tauri.settings.gradle` 会把 tauri 源码里的
+// `mobile/android` 子项目 include 进来，那个子项目自带 google() 声明，改不到。
+// init script 对**所有**项目生效，所以用它。
+//
+// 用法：gradlew ... --init-script <这个文件>
+
+def aliyunRepos = { repos ->
+    repos.clear()
+    // 顺序有讲究：Gradle 碰到网络错误会**立刻失败**、不会顺延到下一个仓库，
+    // 所以把它最可能命中的放最前。aapt2 / AGP / androidx 都在 google 仓库里。
+    repos.maven { url 'https://maven.aliyun.com/repository/google' }
+    repos.maven { url 'https://maven.aliyun.com/repository/public' }
+    repos.maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+}
+
+settingsEvaluated { settings ->
+    aliyunRepos(settings.pluginManagement.repositories)
+    aliyunRepos(settings.dependencyResolutionManagement.repositories)
+}
+
+allprojects { project ->
+    aliyunRepos(project.buildscript.repositories)
+    aliyunRepos(project.repositories)
+}

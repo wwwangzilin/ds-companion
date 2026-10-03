@@ -1,0 +1,26 @@
+[package]
+name = "dsc-android-poc"
+version = "0.0.1"
+description = "Injection-timing PoC for ds-companion on Android (route B)"
+authors = ["ds-companion"]
+license = "MIT"
+edition = "2021"
+
+# Tauri 2 mobile requires a library target with these crate types.
+[lib]
+name = "dsc_android_poc_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+# Pin to the same minor as ds-companion so wry behaves identically (wry 0.55.x).
+tauri = { version = "2.11.3", features = [] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
