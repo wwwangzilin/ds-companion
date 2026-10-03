@@ -143,6 +143,41 @@
   display: none;
 }
 
+/* ── 成本闸里的两个小输入框（安静时段 / 每天最多）──────────────────────
+   它们跟旁边的三档分段控件同排，所以只给最小样式：跟 .seg 一个高度、
+   数字居中好读就行 —— 别在这排里做大字段，那会把闸门挤乱。 */
+.quiet {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quiet input {
+  width: 62px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.quiet input:hover {
+  border-color: var(--line-2);
+}
+
+.quiet input:focus {
+  outline: none;
+  border-color: var(--v);
+}
+
+.quiet-sep {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
 html,
 body {
   height: 100%;

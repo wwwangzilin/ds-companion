@@ -741,6 +741,13 @@ fn dsc_proactive(day: String, cap: u32, hour: u32) -> ProactiveReply {
         return deny("没有激活角色");
     }
     let mut st = state::load_state(&character);
+    // 安静时段：**必须排在额度前面**。放到 `proactive_budget_ok` 后面就等于
+    // 「半夜每问一次都白扣一次额度」—— 而这道闸本来就是为了不打扰，
+    // 白烧掉的额度比不吭声更烦人。
+    if state::quiet_now(cfg.proactive_quiet_from, cfg.proactive_quiet_to, hour) {
+        shell_log(&format!("[state] 安静时段（{hour} 点），不主动开口"));
+        return deny("安静时段");
+    }
     if !state::proactive_budget_ok(&mut st, &day, cap) {
         shell_log(&format!("[state] 主动额度用完（{day} cap={cap}）"));
         return deny("今天的额度用完了");

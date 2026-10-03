@@ -67,9 +67,15 @@ pub struct AppConfig {
     /// 多久没动静算空闲（分钟）
     #[serde(default = "default_idle_minutes")]
     pub proactive_idle_minutes: u32,
-    /// 主动的当日上限（防打扰也防花钱）
+    /// 主动的当日上限（防打扰也防花钱）。**0 = 不限**（与感知额度同一个约定）。
     #[serde(default = "default_proactive_cap")]
     pub proactive_daily_cap: u32,
+    /// 安静时段：这两小时之间**不主动开口**（跨零点也行，例如 23 → 8）。
+    /// `None` = 那一侧没配 —— 两侧都配齐才生效，默认「全天都能说」。
+    #[serde(default)]
+    pub proactive_quiet_from: Option<u32>,
+    #[serde(default)]
+    pub proactive_quiet_to: Option<u32>,
     /// 页面右下角状态 HUD
     #[serde(default = "default_true")]
     pub hud_enabled: bool,
@@ -223,6 +229,10 @@ impl Default for AppConfig {
             proactive_mode: default_proactive_mode(),
             proactive_idle_minutes: 20,
             proactive_daily_cap: 6,
+            // 默认不配安静时段：★不偷偷改掉已在跑的行为★（他现在是「模型」模式，
+            // 加了默认时段就等于凭空给他禁言了某几个小时）
+            proactive_quiet_from: None,
+            proactive_quiet_to: None,
             hud_enabled: true,
             body_enabled: true,
             user_state_enabled: true,
@@ -310,6 +320,10 @@ pub struct InjectPayload {
     pub proactive_mode: String,
     pub proactive_idle_minutes: u32,
     pub proactive_daily_cap: u32,
+    /// 安静时段：页面拿它拼日志与提示 —— 她不说的时候，得能一眼看出是
+    /// 「到了安静时段」而不是「链路坏了」
+    pub proactive_quiet_from: Option<u32>,
+    pub proactive_quiet_to: Option<u32>,
     /// 身体层 / 对方状态各自的开关（页面据此决定显示哪几行）
     pub body_enabled: bool,
     pub user_state_enabled: bool,
@@ -411,6 +425,8 @@ pub fn inject_payload() -> InjectPayload {
         proactive_mode: cfg.proactive_mode.clone(),
         proactive_idle_minutes: cfg.proactive_idle_minutes,
         proactive_daily_cap: cfg.proactive_daily_cap,
+        proactive_quiet_from: cfg.proactive_quiet_from,
+        proactive_quiet_to: cfg.proactive_quiet_to,
         body_enabled: cfg.body_enabled,
         user_state_enabled: cfg.user_state_enabled,
         user_state,
@@ -492,6 +508,8 @@ mod tests {
         assert_eq!(d.sense_mode, "local", "本地感知零成本，默认开");
         assert_eq!(d.proactive_mode, "off", "空闲主动默认必须关 —— 它可能自己发请求");
         assert_eq!(d.proactive_daily_cap, 6, "就算开了也别刷屏");
+        assert_eq!(d.proactive_quiet_from, None, "安静时段默认不配 = 全天都能说");
+        assert_eq!(d.proactive_quiet_to, None, "默认绝不偷偷改掉既有行为");
         assert!(d.sense_daily_cap > 0, "模型感知要有当日闸");
         assert!(d.hud_enabled);
     }

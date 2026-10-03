@@ -778,6 +778,14 @@
       });
   }
 
+  /** 安静时段的文字（没配就是空串）。两侧都配齐才算配了，与壳里 `quiet_now` 一个判据。 */
+  function quietWindowText() {
+    var f = CFG.proactiveQuietFrom;
+    var t = CFG.proactiveQuietTo;
+    if (f === null || f === undefined || t === null || t === undefined) return '';
+    return f + ' → ' + t + ' 点';
+  }
+
   function checkIdle() {
     var mode = CFG.proactiveMode;
     if (!mode || mode === 'off') return;
@@ -1460,7 +1468,15 @@
     });
     window.addEventListener('focus', markActivity, true);
     setInterval(checkIdle, 30000);
-    log('idle-watchman started（空闲阈值 ' + (CFG.proactiveIdleMinutes || 20) + ' 分钟）');
+    // 安静时段的判定在壳里（它才拿着 hour）—— 这里只把它写进日志：
+    // 她不说的时候，一眼要能看出是「到了安静时段」而不是「链路坏了」
+    log(
+      'idle-watchman started（空闲阈值 ' +
+        (CFG.proactiveIdleMinutes || 20) +
+        ' 分钟' +
+        (quietWindowText() ? '，安静时段 ' + quietWindowText() : '，全天') +
+        '）',
+    );
     // 注入成功就报一次体检：否则主人打开设置只会看到"还没有体检数据"，
     // 而"她活着、但还什么都没干"本身是有用信息（至少证明注入链路是通的）
     publishHealth('boot');

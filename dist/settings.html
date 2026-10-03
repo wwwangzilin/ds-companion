@@ -283,6 +283,28 @@
                   <button data-v="model">模型</button>
                 </div>
               </div>
+              <!-- 安静时段：跨零点也行（23 → 8）。留空 = 全天都能说。 -->
+              <div class="gate">
+                <span
+                  class="gate-label"
+                  title="这两个小时之间她不会主动开口。跨零点也行（例如 23 → 8，指 23 点到次日 8 点）。两边都留空 = 全天都能说。"
+                  >安静时段</span
+                >
+                <div class="quiet">
+                  <input id="sf-quiet-from" type="number" min="0" max="23" step="1" placeholder="—" />
+                  <span class="quiet-sep">点 →</span>
+                  <input id="sf-quiet-to" type="number" min="0" max="23" step="1" placeholder="—" />
+                  <span class="quiet-sep">点</span>
+                </div>
+              </div>
+              <!-- 每天最多几次：0 = 不限（与「模型感知」的额度同一个约定） -->
+              <div class="gate">
+                <span class="gate-label" title="她一天最多主动开口几次，防刷屏。0 = 不限。">每天最多</span>
+                <div class="quiet">
+                  <input id="sf-procap" type="number" min="0" max="99" step="1" />
+                  <span class="quiet-sep">次</span>
+                </div>
+              </div>
             </div>
             <p class="hint" id="st-gate-hint"></p>
 

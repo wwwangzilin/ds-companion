@@ -1931,10 +1931,74 @@ pub fn proactive_budget_ok(state: &mut CharState, day: &str, cap: u32) -> bool {
     true
 }
 
+/// 现在是不是「安静时段」（这段里她不许主动开口）。
+///
+/// 【为什么不能直接 `from <= h && h < to`】安静时段十有八九是跨零点的（23 点 → 8 点）。
+/// 那样写：`23 <= h && h < 8` 永远为假（等于没配，白配一个旋钮）；
+/// 把两侧换个位置写成 `8 <= h && h < 23` 更糟 —— 白天禁言、半夜随便说，正好反了。
+/// 跨零点的正确判据是「从 from 起绕了多少小时」：
+/// 时长 `(to - from + 24) % 24`、偏移 `(h - from + 24) % 24`，偏移落在时长之内就是安静。
+///
+/// 【没配 / 配坏了怎么办】一律当**不安静**。这道闸的作用是少打扰，不是替主人做决定：
+/// 一个笔误不该让她从此闭嘴（要静音有「空闲主动 → 关」那一档，那个意图是明确的）。
+///
+/// 【hour 越界也要兜住】它是页面报上来的（`new Date().getHours()`），先取模再算 ——
+/// 报来 25 时不该算出个莫名其妙的结论。
+pub fn quiet_now(from: Option<u32>, to: Option<u32>, hour: u32) -> bool {
+    let (Some(f), Some(t)) = (from, to) else {
+        return false;
+    };
+    // f == t 有两种解读（全天禁言 / 形同虚设），一律当「没配」——歧义的东西不猜
+    if f > 23 || t > 23 || f == t {
+        return false;
+    }
+    let span = (t + 24 - f) % 24;
+    let off = (hour % 24 + 24 - f) % 24;
+    off < span
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+
+    /// 安静时段：跨零点（23 → 8）两个方向都得对，缺一半/配坏了都不许静音。
+    #[test]
+    fn quiet_window_crosses_midnight() {
+        let (f, t) = (Some(23), Some(8));
+        // 23 点到次日 8 点之间：安静
+        for h in [23, 0, 3, 7] {
+            assert!(quiet_now(f, t, h), "{h} 点该是安静时段");
+        }
+        // 8 点整开始就能说了（左闭右开），白天更不用说
+        for h in [8, 12, 22] {
+            assert!(!quiet_now(f, t, h), "{h} 点不该被静音");
+        }
+    }
+
+    /// 不跨零点的时段（13 → 15）也要对，且不许把两边搞反。
+    #[test]
+    fn quiet_window_within_a_day() {
+        let (f, t) = (Some(13), Some(15));
+        assert!(quiet_now(f, t, 13));
+        assert!(quiet_now(f, t, 14));
+        assert!(!quiet_now(f, t, 15), "右端是开的");
+        assert!(!quiet_now(f, t, 12));
+        assert!(!quiet_now(f, t, 2), "★反过来的那一侧绝不能被静音★");
+    }
+
+    /// 没配 / 只配一半 / 配坏 / 相等 / hour 越界 —— 一律不许静音。
+    #[test]
+    fn quiet_needs_a_sane_window() {
+        assert!(!quiet_now(None, None, 3), "没配 = 全天都能说");
+        assert!(!quiet_now(Some(23), None, 3), "只配一半不该生效");
+        assert!(!quiet_now(None, Some(8), 3), "只配一半不该生效");
+        assert!(!quiet_now(Some(23), Some(23), 23), "两边相同有歧义，当没配");
+        assert!(!quiet_now(Some(24), Some(8), 3), "越界的小时当没配");
+        assert!(!quiet_now(Some(23), Some(25), 3), "越界的小时当没配");
+        // 页面报上来脏值也要兜住（不能算出个莫名其妙的结果）
+        assert!(quiet_now(Some(23), Some(8), 25), "25 点 ≡ 1 点，仍在安静时段");
+    }
 
     fn sig(v: f32, a: f32, i: f32) -> Signal {
         Signal {

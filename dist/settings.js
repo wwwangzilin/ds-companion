@@ -27,11 +27,24 @@ let memImportance = 3;
  * 实测被自己的验收脚本这么坑过一次：主人的「露娜 / 每轮」被打回「三千代 / 仅首条」。
  * 与 Quill 那条「persist 前先读盘」是同一类错误：读-改-写，永远不要盲写整份。
  */
+// 写配置的串行队列（见 patchCfg 里的说明）。声明必须在函数之前：`let` 在声明执行前
+// 处于暂时性死区，提前调用会直接 ReferenceError。
+let cfgWriteChain = Promise.resolve();
+
 async function patchCfg(patch) {
-  const fresh = await invoke('config_get');
-  cfg = { ...fresh, ...patch };
-  await invoke('config_set', { cfg });
-  return cfg;
+  // 【为什么还要一条队列】"读-改-写"只保证"不覆盖别人的改动"，保证不了**自己两次修改
+  // 不互相覆盖**：两次调用挤在一起时，后一次读到的可能是前一次写盘之前那份 ——
+  // 于是后一次会把前一次的改动一起带回去（实测：连着改安静时段的两个输入框，
+  // 第一个框的值被第二个框的保存抹掉了）。串行化就够：前一次写完，后一次再读再写。
+  const run = cfgWriteChain.then(async () => {
+    const fresh = await invoke('config_get');
+    cfg = { ...fresh, ...patch };
+    await invoke('config_set', { cfg });
+    return cfg;
+  });
+  // 队列本身必须能继续往下走：某一次失败不能把后来的人全卡死
+  cfgWriteChain = run.catch(() => {});
+  return run;
 }
 
 // ── 小工具 ───────────────────────────────────────────────────────────────
@@ -1114,6 +1127,16 @@ function renderStSpark() {
     '<div class="spark-legend"><span><i style="background:#a78bfa"></i>情绪</span><span><i style="background:#f472b6"></i>好感</span></div>';
 }
 
+/** 「空闲主动」那一行的时间口径：多久算离开 + 安静时段（留空就说清是全天）。 */
+function proactiveTimingHint(mode) {
+  if (mode === 'off') return '';
+  const idle = ` 空闲 ${cfg.proactiveIdleMinutes || 20} 分钟起`;
+  const f = cfg.proactiveQuietFrom;
+  const t = cfg.proactiveQuietTo;
+  const unset = f === null || f === undefined || t === null || t === undefined;
+  return idle + (unset ? '；全天都能说。' : `；${f} 点到 ${t} 点不打扰。`);
+}
+
 function renderStGateHint() {
   const sense = SENSE_OPTIONS.find((o) => o.v === (cfg.senseMode || 'local')) || SENSE_OPTIONS[1];
   const pro = PROACTIVE_OPTIONS.find((o) => o.v === (cfg.proactiveMode || 'off')) || PROACTIVE_OPTIONS[0];
@@ -1137,7 +1160,7 @@ function renderStGateHint() {
     `回锚：${anchor ? `每 ${anchor} 轮补一次【回锚】` : '关'}` +
       (cfg.cadence === 'every' ? '（节奏是「每轮」时回锚会自动跳过，人设本来就在）' : ''),
     `情绪感知：${sense.hint}` + (sense.v === 'model' ? ` 间隔 ≥${cfg.senseEveryTurns || 12} 轮。` : ''),
-    `空闲主动：${pro.hint}` + (pro.v === 'off' ? '' : ` 空闲 ${cfg.proactiveIdleMinutes || 20} 分钟起。`),
+    `空闲主动：${pro.hint}` + proactiveTimingHint(pro.v),
     used.join(' · '),
   ];
   $('st-gate-hint').textContent = parts.filter(Boolean).join('　');
@@ -1422,6 +1445,11 @@ function renderStAll() {
   $('st-body').checked = cfg.bodyEnabled !== false;
   $('st-user').checked = cfg.userStateEnabled !== false;
   $('sf-idle').value = cfg.proactiveIdleMinutes || 20;
+  // 安静时段：空串 = 那一侧没配（跟 Rust 侧一个判据：两侧都配齐才生效）
+  $('sf-quiet-from').value = cfg.proactiveQuietFrom === null || cfg.proactiveQuietFrom === undefined ? '' : cfg.proactiveQuietFrom;
+  $('sf-quiet-to').value = cfg.proactiveQuietTo === null || cfg.proactiveQuietTo === undefined ? '' : cfg.proactiveQuietTo;
+  // 每天最多：★不能拿 `|| 6` 兜底★ —— 0 是「不限」，`0 || 6` 会把它悄悄改成 6
+  $('sf-procap').value = cfg.proactiveDailyCap === null || cfg.proactiveDailyCap === undefined ? 6 : cfg.proactiveDailyCap;
 }
 
 /** 身体那几个滑块 + 心跳 + 睡着 + 派生出来的身体语言 */
@@ -2207,6 +2235,31 @@ $('sf-idle').addEventListener('change', (e) => {
   const v = Math.max(3, Math.min(600, Number(e.target.value) || 20));
   e.target.value = v;
   setGate({ proactiveIdleMinutes: v });
+});
+// 安静时段的两个小时：清空就是「不配这一侧」（null），别拿 0 当默认 ——
+// 0 点是个合法的整点，把空当成 0 就等于凭空禁言凌晨那一段
+function quietHour(el) {
+  const raw = String(el.value == null ? '' : el.value).trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(23, Math.round(n)));
+}
+for (const [id, key] of [
+  ['sf-quiet-from', 'proactiveQuietFrom'],
+  ['sf-quiet-to', 'proactiveQuietTo'],
+]) {
+  $(id).addEventListener('change', () => {
+    const v = quietHour($(id));
+    setGate({ [key]: v });
+  });
+}
+$('sf-procap').addEventListener('change', (e) => {
+  // 空 → 回到默认 6；填 0 就是「不限」（跟 Rust 的 proactive_budget_ok 一个意思）
+  const raw = String(e.target.value == null ? '' : e.target.value).trim();
+  const v = raw === '' ? 6 : Math.max(0, Math.min(99, Math.round(Number(raw) || 0)));
+  e.target.value = v;
+  setGate({ proactiveDailyCap: v });
 });
 for (const b of $('st-review').querySelectorAll('button')) {
   b.addEventListener('click', () => {
