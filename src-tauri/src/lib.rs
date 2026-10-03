@@ -1270,16 +1270,28 @@ fn log_clear() -> Result<(), String> {
 /// 在资源管理器里选中日志文件（找不到文件就打开所在目录）
 #[tauri::command]
 fn log_reveal() -> Result<(), String> {
-    let path = log_path();
-    let mut cmd = std::process::Command::new("explorer");
-    if path.exists() {
-        cmd.arg(format!("/select,{}", path.display()));
-    } else {
-        cmd.arg(std::env::temp_dir());
+    // Android 没有资源管理器，而且日志在 app 私有目录里（别的应用看不到）。
+    // 那边该做的是"分享日志"（系统 share intent），等做功能时再补。
+    #[cfg(mobile)]
+    {
+        Err(format!(
+            "Android 上没有文件管理器可以定位日志；它在 {}",
+            log_path().display()
+        ))
     }
-    no_window(&mut cmd);
-    cmd.spawn().map_err(|e| e.to_string())?;
-    Ok(())
+    #[cfg(desktop)]
+    {
+        let path = log_path();
+        let mut cmd = std::process::Command::new("explorer");
+        if path.exists() {
+            cmd.arg(format!("/select,{}", path.display()));
+        } else {
+            cmd.arg(std::env::temp_dir());
+        }
+        no_window(&mut cmd);
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 // ─────────────────────────── 数据目录（隔离可见化） ──────────────────────────
@@ -1319,13 +1331,27 @@ fn data_dir() -> DataDirInfo {
 /// 打开数据目录：点一下就能看到自己的记忆/人设/状态文件在哪
 #[tauri::command]
 fn data_reveal() -> Result<(), String> {
-    let dir = personas::app_root();
-    let _ = std::fs::create_dir_all(&dir);
-    let mut cmd = std::process::Command::new("explorer");
-    cmd.arg(dir.display().to_string());
-    no_window(&mut cmd);
-    cmd.spawn().map_err(|e| e.to_string())?;
-    Ok(())
+    // Android 的数据目录在应用私有空间里（/data/data/<pkg>/files），既没有资源
+    // 管理器能打开它、别的应用也看不到 —— 明确说明，别让按钮点了像没反应。
+    #[cfg(mobile)]
+    {
+        let dir = personas::app_root();
+        let _ = std::fs::create_dir_all(&dir);
+        Err(format!(
+            "Android 上这个目录在应用私有空间里（{}），需要 root 或 adb 才能看到",
+            dir.display()
+        ))
+    }
+    #[cfg(desktop)]
+    {
+        let dir = personas::app_root();
+        let _ = std::fs::create_dir_all(&dir);
+        let mut cmd = std::process::Command::new("explorer");
+        cmd.arg(dir.display().to_string());
+        no_window(&mut cmd);
+        cmd.spawn().map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 /// 整理回收站：把四个 trash 目录都按上限清一遍（只删 trash 里的旧备份，不动正本）
@@ -1341,13 +1367,19 @@ fn trash_prune() -> Result<usize, String> {
 
 // ─────────────────────────── 常驻：自启 / 退出 / 窗口 ─────────────────────
 
-/// 给控制台子进程加 CREATE_NO_WINDOW —— GUI 程序里跑 reg/explorer 不该闪黑框
+/// 给控制台子进程加 CREATE_NO_WINDOW —— GUI 程序里跑 reg/explorer 不该闪黑框。
+///
+/// 整体 `#[cfg(desktop)]`：它只服务自启那套（Windows 注册表的事），Android 上
+/// 既没有调用者、也没有"黑框"这个概念 —— 留着会在手机上变成 dead_code 警告。
+#[cfg(desktop)]
 fn no_window(cmd: &mut std::process::Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
+    #[cfg(not(windows))]
+    let _ = cmd;
 }
 
 const AUTOSTART_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -1358,47 +1390,66 @@ const AUTOSTART_NAME: &str = "DS Companion";
 /// 而 Run 键就是它底下干的事 —— 零依赖、行为完全一样、还能自己读回校验。
 #[tauri::command]
 fn autostart_get() -> bool {
-    let mut cmd = std::process::Command::new("reg");
-    cmd.args(["query", AUTOSTART_KEY, "/v", AUTOSTART_NAME]);
-    no_window(&mut cmd);
-    match cmd.output() {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
+    // Android 上没有注册表这回事（开机启动也不该由 app 自己决定）——
+    // 直接答"没有"，别去 spawn 一个不存在的 reg 程序
+    #[cfg(mobile)]
+    {
+        false
+    }
+    #[cfg(desktop)]
+    {
+        let mut cmd = std::process::Command::new("reg");
+        cmd.args(["query", AUTOSTART_KEY, "/v", AUTOSTART_NAME]);
+        no_window(&mut cmd);
+        match cmd.output() {
+            Ok(out) => out.status.success(),
+            Err(_) => false,
+        }
     }
 }
 
 #[tauri::command]
 fn autostart_set(on: bool) -> Result<bool, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut cmd = std::process::Command::new("reg");
-    if on {
-        cmd.args([
-            "add",
-            AUTOSTART_KEY,
-            "/v",
-            AUTOSTART_NAME,
-            "/t",
-            "REG_SZ",
-            "/d",
-            &format!("\"{}\"", exe.display()),
-            "/f",
-        ]);
-    } else {
-        cmd.args(["delete", AUTOSTART_KEY, "/v", AUTOSTART_NAME, "/f"]);
+    // Android 上开机启动归系统管，app 自己设不了 —— 明确报错，
+    // 别让设置页把它显示成"设置成功"
+    #[cfg(mobile)]
+    {
+        let _ = on;
+        Err("Android 上不支持由应用设置开机自启（那是系统管的）".into())
     }
-    no_window(&mut cmd);
-    let out = cmd.output().map_err(|e| e.to_string())?;
-    if !on && !out.status.success() {
-        // 本来就没这一项，删失败不算错
-        shell_log("[shell] 自启项本来就不存在，忽略删除失败");
-        return Ok(false);
+    #[cfg(desktop)]
+    {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new("reg");
+        if on {
+            cmd.args([
+                "add",
+                AUTOSTART_KEY,
+                "/v",
+                AUTOSTART_NAME,
+                "/t",
+                "REG_SZ",
+                "/d",
+                &format!("\"{}\"", exe.display()),
+                "/f",
+            ]);
+        } else {
+            cmd.args(["delete", AUTOSTART_KEY, "/v", AUTOSTART_NAME, "/f"]);
+        }
+        no_window(&mut cmd);
+        let out = cmd.output().map_err(|e| e.to_string())?;
+        if !on && !out.status.success() {
+            // 本来就没这一项，删失败不算错
+            shell_log("[shell] 自启项本来就不存在，忽略删除失败");
+            return Ok(false);
+        }
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).to_string());
+        }
+        shell_log(&format!("[shell] 开机自启 = {}", on));
+        // 读回校验：写注册表也可能被策略挡掉，别只信命令退出码
+        Ok(autostart_get())
     }
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
-    }
-    shell_log(&format!("[shell] 开机自启 = {}", on));
-    // 读回校验：写注册表也可能被策略挡掉，别只信命令退出码
-    Ok(autostart_get())
 }
 
 /// 真正退出（托盘菜单与设置界面都用它）—— 关窗只是缩到托盘，这个才是"不干了"
