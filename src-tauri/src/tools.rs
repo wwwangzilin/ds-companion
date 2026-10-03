@@ -240,8 +240,18 @@ pub(crate) fn strip_verbatim(p: &Path) -> String {
 }
 
 fn inside(ws: &Path, p: &Path) -> bool {
+    // 【工作区那边必须先规范化】`p` 到这儿时已经过 canonicalize（是"真身"），而 `ws` 是主人
+    // 配的**原始字符串**。工作区正好落在 junction / 软链底下时（CI runner 的 TEMP 就是
+    // `D:\a\_temp`；把项目放在某个链接目录下也一样），两边一个带链接、一个不带，前缀永远
+    // 对不上 —— 结果是**所有**工具调用都被判成"不在工作区内"，而报错看起来像模型把路径
+    // 写错了。GitHub Actions 上 14 个测试全红、本地却全绿，根因就在这里（本地 TEMP 不在
+    // 链接下，所以本地永远看不到）。
+    let ws_real = fs::canonicalize(ws).unwrap_or_else(|_| ws.to_path_buf());
     let a = strip_verbatim(p).to_lowercase();
-    let b = strip_verbatim(ws).to_lowercase().trim_end_matches(['\\', '/']).to_string();
+    let b = strip_verbatim(&ws_real)
+        .to_lowercase()
+        .trim_end_matches(['\\', '/'])
+        .to_string();
     a == b || a.starts_with(&format!("{b}\\")) || a.starts_with(&format!("{b}/"))
 }
 
@@ -250,14 +260,20 @@ fn has_parent_dir(p: &Path) -> bool {
     p.components().any(|c| matches!(c, Component::ParentDir))
 }
 
-/// 路径经过的每一层都不能是**重解析点**（软链/junction）。
+/// 逐层查**工作区之内**的重解析点（软链 / junction）。
 ///
 /// 为什么不能只看最终文件：`工作区\link -> C:\Windows`，`工作区\link\hosts` 最终
 /// canonicalize 出来是工作区外的路径 —— 前缀校验能挡住它，但如果有人先 canonicalize
 /// 再拼相对路径就会骗过去。逐层检查是最省心的兜底，而且能给出可读的错误。
-fn has_symlink_component(p: &Path) -> Option<PathBuf> {
-    let mut acc = PathBuf::new();
-    for c in p.components() {
+///
+/// 【为什么不连 `ws` 自己那几层一起查】工作区是主人配的：它自己完全可能就在一个链接底下
+/// （CI runner 的 TEMP、把项目放在某个软链目录下都算）。那不是"模型绕出去"，是环境本来
+/// 的样子 —— 旧实现把 `ws` 的前缀一起查，于是这类环境里**每一次**工具调用都被拒成
+/// "符号链接，出于安全不允许"。真正要防的是"工作区**里面**有软链指向外面"，那一层照查。
+fn symlink_inside(ws: &Path, joined: &Path) -> Option<PathBuf> {
+    let rel = joined.strip_prefix(ws).ok()?;
+    let mut acc = ws.to_path_buf();
+    for c in rel.components() {
         acc.push(c.as_os_str());
         if let Ok(meta) = fs::symlink_metadata(&acc) {
             if meta.file_type().is_symlink() {
@@ -284,7 +300,7 @@ pub fn resolve_in_workspace(ws: &Path, raw: &str) -> Result<PathBuf, String> {
     } else {
         ws.join(candidate)
     };
-    if let Some(bad) = has_symlink_component(&joined) {
+    if let Some(bad) = symlink_inside(ws, &joined) {
         return Err(format!(
             "{} 是符号链接/快捷方式，出于安全不允许跨出去",
             bad.display()
@@ -343,7 +359,7 @@ fn resolve_write_target(ws: &Path, raw: &str) -> Result<PathBuf, String> {
     if joined.exists() {
         return resolve_in_workspace(ws, &joined.display().to_string());
     }
-    if let Some(bad) = has_symlink_component(&joined) {
+    if let Some(bad) = symlink_inside(ws, &joined) {
         return Err(format!(
             "{} 是符号链接/快捷方式，出于安全不允许跨出去",
             strip_verbatim(&bad)
