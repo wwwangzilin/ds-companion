@@ -14,5 +14,13 @@ __pycache__/
 .verify/out-*.json
 .verify/out-*.txt
 
-# ���ؽ����ͼ�����ܺ���ʵ����/״̬/�Ի���ȷ�Ϲ��ٵ����ӽ���
+# 本地界面截图：可能含真实记忆/状态/对话，确认过再单独加进来
 preview/
+
+# 一次性的批量替换清单（跑完就没用，且里面是本次改动的原文）
+.verify/edits-*.json
+
+# 只用于「把人设同步进本机 DSH preset」：写死了 %APPDATA%/%USERPROFILE% 的目录布局，
+# 对别人没有意义（apply-edits.mjs 是通用工具，那个要进仓库）
+.verify/dsc-sync-persona.mjs
+.verify/dsc-verify-persona-sync.mjs

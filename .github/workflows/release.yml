@@ -1,0 +1,84 @@
+# 发版：推 `v*` tag（或在 Actions 页手动触发）→ 门禁 + release 构建 + 上传 exe。
+#
+# 【版本号从哪来】tag 是唯一真相源 —— 本文件不写死版本号，也不回写仓库。
+# `src-tauri/Cargo.toml` 里的 version 保持不动（0.0.1），产物文件名用 tag。
+#
+# 【为什么同时出 .exe 和 .zip】exe 是"直接跑"（主人一贯的偏好：接收二进制、
+# 不要手动配置）；zip 里带 README + LICENSE，给要存档的人。
+#
+# tag 里带 `-`（如 v0.1.0-dev）自动标 Pre-release，不会顶掉上一个正式版的 Latest。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v0.1.0）—— 必须已存在'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 生成"本次更新"要 git describe 找上一个 tag，浅克隆找不到
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 发版前的门禁：单测不过就不出包（宁可这个 tag 红着，也别发一个会丢正文的版本）
+      - name: Rust 单测
+        working-directory: src-tauri
+        run: cargo test
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 注入脚本单测
+        shell: pwsh
+        run: |
+          foreach ($t in 'test-selector.cjs','test-extract.cjs','test-sse.cjs','test-tools.cjs') {
+            node "tools/$t"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      # release profile 在 Cargo.toml 里已经调好了（lto + strip + opt-level=s），
+      # 代价是构建慢，换来的是单文件小体积
+      - name: 构建 release
+        working-directory: src-tauri
+        run: cargo build --release
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
+          Write-Host "tag = $tag"
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          $exe = "src-tauri\target\release\ds-companion.exe"
+          if (-not (Test-Path $exe)) { Write-Error "没找到 $exe"; exit 1 }
+          Copy-Item $exe "out\ds-companion-$tag-x64.exe"
+          # 附件名保持 ASCII：GitHub 会吞非 ASCII 文件名
+          Compress-Archive -Path "out\ds-companion-$tag-x64.exe", 'README.md', 'LICENSE' `
+            -DestinationPath "out\ds-companion-$tag.zip" -Force
+          Get-ChildItem out | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 2) } }
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: |
+            out/*.exe
+            out/*.zip
+          generate_release_notes: true
+          prerelease: ${{ contains(inputs.tag, '-') || contains(github.ref_name, '-') }}

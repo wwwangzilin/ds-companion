@@ -1,0 +1,57 @@
+# CI：推 main 或开 PR 就跑门禁。
+#
+# 【为什么要它】这个仓库有 176 个 Rust 单测 + 4 份注入脚本单测（tools/test-*.cjs），
+# 但一直**没有任何东西逼着它们跑** —— 回归只能靠人记得手动敲。实测教训：SSE 解析
+# 那 9 项断言里有一半长期是红的，而没人知道（`parseSseText` 的增量路径真的丢了正文，
+# 表现是"空回复"，日志里连个错都没有）。门禁的价值就在这儿。
+#
+# 【为什么在 Windows 上跑】这是一套 Windows 桌面程序：`run_command` 的白名单里全是
+# cmd/powershell 家族，托盘、路径、编码（GBK/BOM）、单实例锁都跟平台绑着。
+# 换 Linux 跑等于测了另一套代码。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Cargo.lock 在仓库里，缓存键很稳；首次冷编译约 3-5 分钟，之后命中缓存快得多
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Rust 单测
+        working-directory: src-tauri
+        run: cargo test
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 这四份是纯 node 脚本（不需要 npm install：注入脚本是手写的 ES5 风格 JS，
+      # 用 module.exports 收尾就是为了能被 node 直接 require 进来测）
+      - name: 注入脚本单测
+        shell: pwsh
+        run: |
+          node tools/test-selector.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tools/test-extract.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tools/test-sse.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tools/test-tools.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # 单测绿不等于能出 exe（比如 tauri-build / 前端资源嵌入这一环单测碰不到）
+      - name: 构建（确认能出 exe）
+        working-directory: src-tauri
+        run: cargo build

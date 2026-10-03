@@ -1,5 +1,8 @@
 # DS Companion
 
+[![ci](https://github.com/wwwangzilin/ds-companion/actions/workflows/ci.yml/badge.svg)](https://github.com/wwwangzilin/ds-companion/actions/workflows/ci.yml)
+[![release](https://github.com/wwwangzilin/ds-companion/actions/workflows/release.yml/badge.svg)](https://github.com/wwwangzilin/ds-companion/actions/workflows/release.yml)
+
 把 `chat.deepseek.com` 装进一个原生窗口，并在**请求体**上注入人设 / 记忆 / 状态，
 让她（当前是「露娜」）记得你、有情绪、有身体、能自己开口 —— 全程走你自己的网页登录态。
 
@@ -612,14 +615,16 @@ cargo test
   `/api/v0/chat/completion`、`APP_VERSION = '2.0.0'`）。上游一改，注入会**静默失效** ——
   日志里有 `INJECTED / skip(原因)`，设置页「日志 → 运行体检」再把断点定位到具体一环
   （注入 / 解析 / 额度 / 回灌），不用再靠猜。
-- 记忆检索是关键词词元匹配（`Intl.Segmenter` 分词 + 精确命中），
-  **重要度 < 4 且触发词没命中的条目不会参与** —— 记了但可能不被捞出来。
-- `push_config` 每次配置/记忆/状态变更都会把**整库可见记忆**重推给页面，
-  记忆量大时是 O(N)（待办：加版本号脏标记）。
+- 记忆检索是**关键词匹配**（`Intl.Segmenter` 分词 + 双向包含），命中门槛还看 `weight`
+  （重要度 × 新鲜度 + 访问回血）。触发词没命中、又不重要也不新鲜的条目**仍然不参与** ——
+  所以「记了却没被想起来」还是可能发生（比只认精确相等那会儿少得多了：中文里最常用的
+  触发词恰恰是两个字，而旧逻辑用 `pw.length > 2` 把它们全挡在门外）。
+- `push_config` 已按**序列化结果去重**（内容一个字节都没变就不发），但内容真变了还是
+  整库推 —— 记忆上千条时依旧是 O(N)。真到那个量级再加版本号/增量，现在不值得。
 - 记忆库当前是"整库推给页面、页面同步挑"的设计，前提是记忆规模不大（几十条级别）。
-- **没有"全局静默"的总开关**：`cadence` 只管**人设块** —— 关掉它之后，状态 / 工具 / 回锚
-  仍然各按各的开关照常注入（2026-10-01 写注入回执时才确认到这一点）。
-  想真的什么都不注入，目前得把那几块逐个关掉。
+- **注入总开关已经有了**：托盘右键「静音（什么都不注入）」、或设置页首页那对「正常注入 / 静音」键。
+  关掉之后页面侧**整条注入路径直接跳过**（连轮数都不推进——静音期间的对话不该算"和她聊了几轮"）。
+  注意它跟 `cadence` 的「关闭」**不是一回事**：那个只管**人设块**，状态 / 工具 / 回锚照进不误。
 
 ---
 
