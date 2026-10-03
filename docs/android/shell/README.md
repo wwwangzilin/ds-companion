@@ -41,18 +41,26 @@ $env:NDK_HOME         = 'D:\android-tools\sdk\ndk\27.2.12479018'
 # 2. 生成 Android 工程
 cargo tauri android init
 
-# 3. 改 gen/android/app/build.gradle.kts：把 compileSdk 从模板的 37 改成 36
+# 3. 打「双注入」补丁（必做）
+#    改 gen/android/app/.../generated/RustWebViewClient.kt 里 onPageStarted 那段：
+#    那句无条件的 evaluateJavascript 会与文档开始脚本叠加执行，把 Tauri 的 IPC 引导
+#    跑第二遍（Cannot redefine property: postMessage / metadata / path…），
+#    后果是页面里所有 invoke 全废 —— 表现为「按钮点了没反应」。
+#    gen/ 不进版本控制，所以重新 init 之后必须重打；脚本幂等、找不到目标会明确报错。
+node <ds-companion 仓库根>\tools\patch-android-provider.mjs
+
+# 4. 改 gen/android/app/build.gradle.kts：把 compileSdk 从模板的 37 改成 36
 #    （37 在 SDK 里叫 platforms;android-37.0，从 Google 下载会挂；
 #      而 tauri-android 这个 AAR 自己要求 compileSdk >= 36）
 
-# 4. Rust 交叉编译，产出 .so
+# 5. Rust 交叉编译，产出 .so
 cargo tauri android build --target aarch64
 #    ↑ 这步会在最后"把 .so 软链进 jniLibs"时失败（本机没开 Windows 开发者模式），
 #      但 .so 已经编好了，手动复制过去即可：
 Copy-Item target\aarch64-linux-android\release\libdsc_android_poc_lib.so `
           gen\android\app\src\main\jniLibs\arm64-v8a\
 
-# 5. 直接走 Gradle 打包（不经 tauri CLI）
+# 6. 直接走 Gradle 打包（不经 tauri CLI）
 cd gen\android
 .\gradlew.bat assembleArm64Debug -x rustBuildArm64Debug `
     --init-script ..\..\gradle-init.gradle
@@ -70,12 +78,14 @@ Start-Sleep -Seconds 15
 adb logcat -d | Select-String -Pattern 'dsc-poc'
 ```
 
-## 五个已踩过的坑
+## 七个已踩过的坑
 
 1. **`.so` 软链被拒**：Tauri CLI 最后要把 `.so` 软链进 `jniLibs/`，Windows 没开开发者模式会报 `Creation symbolic link is not allowed for this system`。→ 手动复制，然后直接跑 `gradlew`（Rust 编译其实已经成功了）。
 2. **`compileSdk = 37` 根本不存在**：模板默认 37，但 SDK 里最高是 36。→ 改 36。
 3. **别写 `buildToolsVersion`**：AGP 9.3.1 要求 build-tools ≥36，写低了会被忽略并报警告；不写它自己会装 36.0.0。
 4. **国外仓库会静默挂死**：`google()` / `plugins.gradle.org` 直连可能让 Gradle daemon 卡 25 分钟——CPU 不涨、日志停在 `Calculating task graph`，看着像死机。→ 用 `gradle-init.gradle` 把所有仓库换成阿里云镜像，命令带 `--init-script`。**只改项目文件不够**：`tauri.settings.gradle` 会把 tauri 源码里的 `mobile/android` 子项目 include 进来，那个子项目自带 `google()` 声明。
 5. **`rustBuild*` 任务必然失败**：它们要求 `cargo tauri android build` 在后台运行（要读 `gen/android/.tauri/cli-options-server.json`）。直接跑 gradlew 时用 `-x rustBuildArm64Debug` 排除即可。
+6. **`--init-script` 的相对路径不生效**：`--init-script ..\gradle-init.gradle` 会让 Gradle 1 秒内 `BUILD FAILED`（相对路径按 daemon 的工作目录解析）。必须给**绝对路径**。
+7. **注入跑两次不是"多打一行日志"那么轻**：wry 的 `RustWebView.kt`（`addDocumentStartJavaScript`）与 `RustWebViewClient.kt`（`onPageStarted` + `evaluateJavascript`）是**两条独立路径、都会触发**。叠加的代价是 Tauri 自己的 IPC 引导脚本被跑第二遍 → `Cannot redefine property: postMessage / metadata / __TAURI_PATTERN__ / path` → 页面里所有 `invoke` 静默失效。注入脚本自身的幂等守卫挡不住这个（它管的是我们那份脚本），必须在 Kotlin 侧关掉第二条路径，见 `tools/patch-android-provider.mjs`。
 
 另外 Gradle wrapper 的 `distributionUrl` 建议换成 `https://mirrors.cloud.tencent.com/gradle/gradle-9.6.1-bin.zip`——官方源是 307 重定向，很慢。

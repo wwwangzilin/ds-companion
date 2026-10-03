@@ -140,6 +140,8 @@ androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
 | 自启 / 打开数据目录 / 定位日志 | （原计划没提） | 分别依赖 `reg.exe` / `explorer.exe` → mobile 上返回带说明的错误，而不是"点了没反应" | ✅ |
 | 单实例锁 | 换成 Android 生命周期 | 实际早就有 `#[cfg(not(windows))] { true }`，不用改 | ✅ |
 | 桌面窗口专属调用 | （原计划没提） | `unminimize` / `center` / `decorations` / `request_user_attention` 全部门控 | ✅ |
+| 双注入的**真实后果** | 原以为「注入脚本幂等就够了」 | 不够 —— 叠加的是 Tauri **自己的 IPC 引导**，`invoke` 全废。修在 Kotlin 侧：`tools/patch-android-provider.mjs`（`gen/` 不进 git，重新 `init` 会静默退回） | ✅ |
+| 首个请求的 `body.prompt` 真被改写 | — | 需要手机上有 DeepSeek 登录态才能观测 | ⏳ 待登录 |
 | PoW wasm | 原样复用 | — | ⏳ 待真机确认 |
 | 进程常驻 | 前台服务 + 电池优化白名单 | — | ⏳ 第二阶段 |
 | 通知栏（替代托盘的状态显示） | — | — | ⏳ 第二阶段 |
@@ -182,6 +184,32 @@ Android 目标的编译错误数是 **11 → 0**（`cargo check --target aarch64
 这与源码的读法不符：`RustWebView.kt:28-35`（`addDocumentStartJavaScript`）与 `RustWebViewClient.kt:62-71`（`onPageStarted` + `evaluateJavascript`）看起来是 if/else 二选一，**实际两个机制都会被触发**。
 
 **迁移硬要求：注入脚本必须幂等。** 每次执行都要能安全重入——不能重复包装 `XMLHttpRequest.prototype`、不能重置已有状态。否则同一个 `body.prompt` 会被改写两次（第一次注入加人设、第二次再加一遍），这是真会出事的 bug。
+
+### ⚠️ 更严重的一半：双注入会打断 Tauri 自己的 IPC（已修，`ae91297`）
+
+幂等守卫只保护了**我们那份脚本**，挡不住叠加带来的另一半伤害：Tauri 在初始化脚本里还要定义 `window.__TAURI_INTERNALS__`（`postMessage` / `metadata` / `__TAURI_PATTERN__` / `path` 等，都是 non-configurable）。跑第二遍时这些属性已经存在 → 整个引导脚本抛错中断 → 页面里所有 `invoke()` 失效。
+
+真机上的表现就是主人报的**「有些地方点不了」**：设置页的每个按钮都点了没反应，控制台里是
+
+```
+Cannot redefine property: postMessage
+Cannot redefine property: metadata
+Cannot redefine property: metadata
+Uncaught TypeError: Cannot read properties of undefined (reading 'runCallback')
+```
+
+**修法在 Kotlin 侧**（`tools/patch-android-provider.mjs`，幂等、找不到目标就报错）：
+
+```kotlin
+// RustWebViewClient.kt, onPageStarted
+if (interceptedState[url] == false && !webView.isDocumentStartScriptEnabled) {
+    view.evaluateJavascript(script, null)
+}
+```
+
+`isDocumentStartScriptEnabled` 是 wry 0.55 起就有的分支判断（`RustWebView.kt` 用它决定走 `addDocumentStartJavaScript`），但 `RustWebViewClient.kt` 这个 fallback 路径**没有跟着判断**，于是两条路径同时生效。补上判断后：支持 `DOCUMENT_START_SCRIPT` 的设备只走第一条，老设备仍走 fallback。
+
+**为什么必须是脚本而不是直接改文件**：`src-tauri/gen/` 已被 `.gitignore` 排除，手改留不下来；下次谁跑一遍 `cargo tauri android init` 就会静默退回有 bug 的版本。所以补丁落在仓库里（`tools/patch-android-provider.mjs`），并且 `tools/verify-android.mjs` 的判据②专门盯这个回归。
 
 ### 未覆盖的部分
 
