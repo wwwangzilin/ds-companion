@@ -14,6 +14,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -73,9 +74,38 @@ fn resolve_app_root(dir: Option<&str>, appdata: Option<&str>, home: Option<&str>
     Path::new(home.unwrap_or(".")).join(".ds-companion")
 }
 
+/// 平台注入的数据根目录（目前只有 Android 用）。
+///
+/// 为什么需要它：`resolve_app_root` 的三条路在手机上**全是坏的** —— 没有
+/// `DSC_DATA_DIR`、没有 `%APPDATA%`、也没有 `USERPROFILE`，最后落到相对路径
+/// `./.ds-companion`，而 app 进程的 CWD 在 Android 上不可写。结果是配置、状态、
+/// 记忆、对话记录、提案**全部写不进去**。所以 setup 拿到 AppHandle 之后把
+/// `app_data_dir()` 注入进来。
+///
+/// 为什么不用环境变量（`std::env::set_var("APPDATA", ...)`）：那是进程级可变状态，
+/// setup 阶段可能已经有别的线程在跑，改它属于数据竞争；而且会污染别处对 APPDATA
+/// 的判断（那是个 Windows 语义的名字）。
+static APP_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// 由 setup 在 Android 上调用。只生效一次；桌面端不调。
+pub fn set_app_root_override(p: PathBuf) {
+    let _ = APP_ROOT_OVERRIDE.set(p);
+}
+
 pub fn app_root() -> PathBuf {
+    // ① 测试隔离开关压过一切：验收脚本靠它一个字节都不碰主人的真数据
+    if let Ok(d) = std::env::var("DSC_DATA_DIR") {
+        if !d.trim().is_empty() {
+            return PathBuf::from(d.trim());
+        }
+    }
+    // ② 平台注入的（Android：app 私有目录）
+    if let Some(p) = APP_ROOT_OVERRIDE.get() {
+        return p.clone();
+    }
+    // ③ 桌面：%APPDATA%\ds-companion > ~/.ds-companion
     resolve_app_root(
-        std::env::var("DSC_DATA_DIR").ok().as_deref(),
+        None,
         std::env::var("APPDATA").ok().as_deref(),
         std::env::var("USERPROFILE").ok().as_deref(),
     )

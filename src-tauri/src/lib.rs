@@ -33,6 +33,7 @@ mod tools;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, Manager};
@@ -40,16 +41,29 @@ use tauri::{Emitter, Manager};
 /// 日志超过这个大小就轮转一份（保留 1 个 .1 备份）
 const LOG_MAX_BYTES: u64 = 1_500_000;
 
+/// 平台注入的日志目录（目前只有 Android 用）。
+///
+/// 手机上 `std::env::temp_dir()` 是 `/data/local/tmp`，**不是 app 能写的地方** ——
+/// 日志会静默丢干净（`shell_log` 的 `if let Ok(...)` 吞掉失败），排查时一片漆黑。
+/// 所以 setup 拿到 AppHandle 后注入 `app_data_dir()`。
+static LOG_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_log_dir_override(p: PathBuf) {
+    let _ = LOG_DIR_OVERRIDE.set(p);
+}
+
 fn log_path() -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push("ds-companion.log");
-    p
+    match LOG_DIR_OVERRIDE.get() {
+        Some(d) => d.join("ds-companion.log"),
+        None => std::env::temp_dir().join("ds-companion.log"),
+    }
 }
 
 fn log_backup_path() -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push("ds-companion.log.1");
-    p
+    match LOG_DIR_OVERRIDE.get() {
+        Some(d) => d.join("ds-companion.log.1"),
+        None => std::env::temp_dir().join("ds-companion.log.1"),
+    }
 }
 
 /// 只写文件。GUI 子系统下没有 stdout，所以这里不再"尽力写 stdout"了 ——
@@ -1941,6 +1955,23 @@ pub fn run() {
             chat_read_day,
         ])
         .setup(move |app| {
+            // 【Android】数据与日志都得住进 app 私有目录。
+            // 手机上没有 `%APPDATA%`、`temp_dir()`（/data/local/tmp）也不可写 ——
+            // 不注入的话 `app_root()` 会落到相对路径 `./.ds-companion`，
+            // 配置/状态/记忆/对话记录/提案**全部写不进去**，而日志会静默丢干净。
+            // 桌面端整段跳过（那边的 %APPDATA% 与 %TEMP% 本来就是对的）。
+            #[cfg(mobile)]
+            {
+                match app.path().app_data_dir() {
+                    Ok(dir) => {
+                        let _ = std::fs::create_dir_all(&dir);
+                        personas::set_app_root_override(dir.clone());
+                        set_log_dir_override(dir.clone());
+                        shell_log(&format!("[android] data root -> {}", dir.display()));
+                    }
+                    Err(e) => shell_log(&format!("[android] app_data_dir() 失败：{e}")),
+                }
+            }
             let boot = serde_json::to_string(&config::inject_payload())
                 .unwrap_or_else(|_| "null".into());
             // 注入脚本 = 引导配置 + 纯函数检索器 + 主逻辑 + DeepSeek 自请求通道。
