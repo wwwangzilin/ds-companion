@@ -123,19 +123,31 @@ androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
 
 ---
 
-## 5. 如果 PoC 通过，迁移清单
+## 5. 迁移清单与进度
 
-| 桌面端 | Android 端 |
-|---|---|
-| 注入脚本 9 个文件 | 原样复用（都是纯 JS，无平台 API），但**必须先改成幂等**（见第 6 节的实测发现） |
-| `run_command` 工具 | **去掉**（手机上无意义），保留 `list_dir`/`read_file`/`find`/`write_file`/`edit_file` |
-| 托盘菜单 + 角标 | 通知栏常驻通知 + 快捷操作 |
-| 进程常驻（窗口关掉还在） | **前台服务**（`FOREGROUND_SERVICE` + 通知），并引导用户关闭电池优化 |
-| 数据目录 `%APPDATA%` | 走 `app_root()`，Android 下自动映射到应用私有目录 |
-| PoW wasm | 原样复用（base64 内联，不依赖文件系统） |
-| 单实例锁 / 看门狗 | 换成 Android 生命周期 |
+**第一阶段（能在真机跑起来 + 注入生效）已完成**，落地见 `d6d2ebb` / `107475b` / `b134d25`。
 
-工作量估计：**PoC 通过后约一周**（不含应用商店上架）。
+原计划里有一处**猜错了**，一并记进来 —— 它恰好是最容易埋雷的那处：
+
+| 项 | 原计划 | 实际做法 | 状态 |
+|---|---|---|---|
+| 注入脚本 9 个文件 | 原样复用，但必须先幂等 | 在拼接处包一层 `window.__DSC_INJECTED__` 守卫 —— **9 个脚本一个字没动** | ✅ |
+| mobile 结构 | lib.rs + `mobile_entry_point` | `main.rs`→`lib.rs`（新 `main.rs` 只调 `run()`），Cargo 加 `[lib] crate-type` | ✅ |
+| `run_command` 工具 | 去掉 | `platform_supports()` 在四个出口过滤；`TOOLS` 常量**不动**（桌面测试要断言它的 risk 必须是 Write） | ✅ |
+| 托盘菜单 + 角标 | 通知栏替代 | `TrayState`/`build_tray`/`refresh_tray` 全 `#[cfg(desktop)]` + mobile **no-op 替身**（7 个调用点零改动） | ✅ |
+| 数据目录 `%APPDATA%` | “走 `app_root()`，自动映射到私有目录” — ❌ **这条猜错了** | 三条兜底在手机上**全坏**（无 `DSC_DATA_DIR` / `%APPDATA%` / `USERPROFILE`），会落到不可写的相对路径 `./.ds-companion` → 用 `OnceLock` 注入 `app_data_dir()` | ✅ |
+| 日志 | （原计划没提） | 同上：`temp_dir()` 是 `/data/local/tmp`，同样不可写，而 `shell_log` 会**静默吞掉失败** | ✅ |
+| 自启 / 打开数据目录 / 定位日志 | （原计划没提） | 分别依赖 `reg.exe` / `explorer.exe` → mobile 上返回带说明的错误，而不是"点了没反应" | ✅ |
+| 单实例锁 | 换成 Android 生命周期 | 实际早就有 `#[cfg(not(windows))] { true }`，不用改 | ✅ |
+| 桌面窗口专属调用 | （原计划没提） | `unminimize` / `center` / `decorations` / `request_user_attention` 全部门控 | ✅ |
+| PoW wasm | 原样复用 | — | ⏳ 待真机确认 |
+| 进程常驻 | 前台服务 + 电池优化白名单 | — | ⏳ 第二阶段 |
+| 通知栏（替代托盘的状态显示） | — | — | ⏳ 第二阶段 |
+
+Android 目标的编译错误数是 **11 → 0**（`cargo check --target aarch64-linux-android --lib`），
+桌面侧全程守着 `cargo build` 0 警告 + **176 tests passed**。
+
+工作量估计：**约一周**（不含应用商店上架）；第一阶段（表里 ✅ 的部分）已经落地。
 
 ---
 
