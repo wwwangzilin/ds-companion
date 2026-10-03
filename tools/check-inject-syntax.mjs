@@ -50,6 +50,7 @@ const guarded =
   "  console.log('[dsc] 重复注入已跳过 #' + window.__DSC_INJECTED_AGAIN__);\n" +
   "} else {\n" +
   "  window.__DSC_INJECTED__ = true;\n" +
+  "  console.log('[dsc] 首次注入 readyState=' + document.readyState + ' htmlLen=' + (document.documentElement ? document.documentElement.innerHTML.length : -1) + ' xhrNative=' + (/\\[native code\\]/.test(Function.prototype.toString.call(XMLHttpRequest.prototype.open))));\n" +
   '  window.__DSC_BOOT_CONFIG__ = {};\n' +
   '  window.__DSC_POW_WASM_B64__ = "AAAA";\n' +
   body +

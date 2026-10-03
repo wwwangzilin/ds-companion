@@ -2065,7 +2065,7 @@ pub fn run() {
             // 页面真正导航/刷新时 window 是新的，守卫自然失效、注入照常生效；
             // SPA 内部跳转不重载文档，注入本来也不会重跑。
             let script = format!(
-                "if (window.__DSC_INJECTED__) {{\n  window.__DSC_INJECTED_AGAIN__ = (window.__DSC_INJECTED_AGAIN__ || 0) + 1;\n  console.log('[dsc] 重复注入已跳过 #' + window.__DSC_INJECTED_AGAIN__);\n}} else {{\n  window.__DSC_INJECTED__ = true;\n  window.__DSC_BOOT_CONFIG__ = {boot};\n  window.__DSC_POW_WASM_B64__ = \"{pow}\";\n{body}\n}}\n",
+                "if (window.__DSC_INJECTED__) {{\n  window.__DSC_INJECTED_AGAIN__ = (window.__DSC_INJECTED_AGAIN__ || 0) + 1;\n  console.log('[dsc] 重复注入已跳过 #' + window.__DSC_INJECTED_AGAIN__);\n}} else {{\n  window.__DSC_INJECTED__ = true;\n  console.log('[dsc] 首次注入 readyState=' + document.readyState + ' htmlLen=' + (document.documentElement ? document.documentElement.innerHTML.length : -1) + ' xhrNative=' + (/\\[native code\\]/.test(Function.prototype.toString.call(XMLHttpRequest.prototype.open))));\n  window.__DSC_BOOT_CONFIG__ = {boot};\n  window.__DSC_POW_WASM_B64__ = \"{pow}\";\n{body}\n}}\n",
                 boot = boot,
                 pow = pow_b64,
                 body = INJECT_BODY
