@@ -46,10 +46,12 @@ jobs:
         with:
           node-version: '20'
 
+      # 发版前的门禁之一：注入脚本单测。★这份清单要和 ci.yml 保持一致★ ——
+      # 加了新测试文件却漏在这儿，等于"发出去的包没跑过它"（test-diary 就漏过一次）。
       - name: 注入脚本单测
         shell: pwsh
         run: |
-          foreach ($t in 'test-selector.cjs','test-extract.cjs','test-sse.cjs','test-tools.cjs') {
+          foreach ($t in 'test-selector.cjs','test-extract.cjs','test-sse.cjs','test-tools.cjs','test-diary.cjs') {
             node "tools/$t"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
