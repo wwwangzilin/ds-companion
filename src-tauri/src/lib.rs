@@ -361,7 +361,16 @@ fn active_character() -> String {
 }
 
 #[tauri::command]
-fn dsc_turn_report(app: tauri::AppHandle, user_text: String, hour: u32) -> TurnReport {
+/// `day` 是**页面报上来的本地日期**（`YYYY-MM-DD`）。Rust 的 `std` 只有 UTC，
+/// 算本地日期得先拖个时区库进来 —— 而项目既有的做法就是"日期由页面报告"
+/// （`sense_day` / `proactive_day` / `review_day` 都是这么来的）。
+/// 它只用于按天聚合的长期曲线，传空或形状不对就跳过那一轮。
+fn dsc_turn_report(
+    app: tauri::AppHandle,
+    user_text: String,
+    hour: u32,
+    day: Option<String>,
+) -> TurnReport {
     let cfg = config::load();
     let character = personas::active_character_id(cfg.active_persona.as_deref());
     if !cfg.state_enabled || character.is_empty() {
@@ -406,6 +415,8 @@ fn dsc_turn_report(app: tauri::AppHandle, user_text: String, hour: u32) -> TurnR
     let intimate = sig.intimate;
     state::apply_turn(&mut st, &sig, intimate, now, task_mode);
     state::apply_body_turn(&mut st.body, &sig, st.arousal, now);
+    // 并进"按天那一行"（长期曲线的数据来源）。日期是页面报的，见上面的参数说明。
+    state::fold_daily(&mut st, day.as_deref());
     // 关系里程碑：第一次说话 / 聊满 N 轮 / 好感度达标 / 认识第 N 天 / 第一次叫主人
     let new_ms = state::detect_milestones(&mut st, &sig, now, intimate);
     // 工作态下不主动花额度做模型感知 —— 干活时来一句"你是不是心情不好"最碍事

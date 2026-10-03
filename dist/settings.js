@@ -277,6 +277,7 @@ function renderAll() {
   renderStatus();
   // 人设变了，状态页的角色列表也要跟着变（用缓存，不额外读盘）
   if ($('st-list')) renderStList();
+  if ($('curve')) renderCurve();
 }
 
 function openEditor(id) {
@@ -848,6 +849,72 @@ function stOf(id) {
   return states[id] || { characterId: id, mood: '—', affinity: 0, energy: 0, valence: 0, arousal: 0, turns: 0, samples: [], anchors: [], arc: '' };
 }
 
+// ── 状态曲线：好感（粉）与情绪（蓝）的长期走势 ──────────────────────────
+//
+// 【数据从哪来】Rust 侧的 `CharState.daily` —— 一天一行、最多 90 天。
+// 它比 `samples`（只留最近 40 次）更能回答"这一个月她对我怎么变的"：
+// 40 轮很可能只是一个晚上聊出来的。
+//
+// 【日期为什么在页面上】Rust 的 std 只有 UTC，本地日期一直是页面报上去的
+// （和 senseDay / proactiveDay 同一条路）。所以老状态文件里没有 daily 是正常的，
+// 取不到就**明说"还画不出"**，绝不画一条假线糊弄过去。
+var CURVE_W = 100;
+var CURVE_H = 34;
+var CURVE_PAD = 2;
+
+function renderCurve() {
+  const box = $('curve');
+  if (!box) return;
+  const s = stCurrent ? stOf(stCurrent.characterId) : null;
+  const daily = s && Array.isArray(s.daily) ? s.daily.filter((d) => d && d.day) : [];
+  const sub = $('curve-sub');
+  const hint = $('curve-hint');
+
+  if (daily.length < 2) {
+    box.innerHTML = '<div class="curve-empty">还画不出曲线 —— 至少要有两天的记录</div>';
+    if (sub) sub.textContent = daily.length ? '只有 1 天' : '还没有历史';
+    if (hint) {
+      hint.textContent =
+        '每聊一轮就把当天并进一行（一天一行，最多留 90 天）。明天再来就有线了。';
+    }
+    return;
+  }
+
+  const yOf = (v) => CURVE_H - CURVE_PAD - v * (CURVE_H - CURVE_PAD * 2);
+  const xOf = (i) => CURVE_PAD + (i / (daily.length - 1)) * (CURVE_W - CURVE_PAD * 2);
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+
+  const affPts = daily
+    .map((d, i) => xOf(i).toFixed(2) + ',' + yOf(clamp01((d.affinity || 0) / 100)).toFixed(2))
+    .join(' ');
+  const valPts = daily
+    .map((d, i) => xOf(i).toFixed(2) + ',' + yOf(clamp01(((d.valence || 0) + 1) / 2)).toFixed(2))
+    .join(' ');
+
+  // 50% 虚标线：好感 50 分 / 情绪中性都落在这一条上 —— 有它才看得出"在线上还是线下"
+  const mid = yOf(0.5).toFixed(2);
+  // vector-effect：viewBox 被 preserveAspectRatio="none" 横向拉伸时，
+  // 描边也会跟着变形；加上它线宽才是恒定 1px。
+  box.innerHTML =
+    '<svg class="curve-svg" viewBox="0 0 ' + CURVE_W + ' ' + CURVE_H + '" ' +
+    'preserveAspectRatio="none" role="img" aria-label="好感与情绪走势">' +
+    '<line class="curve-mid" x1="0" y1="' + mid + '" x2="' + CURVE_W + '" y2="' + mid +
+    '" vector-effect="non-scaling-stroke"/>' +
+    '<polyline class="curve-val" points="' + valPts + '" vector-effect="non-scaling-stroke"/>' +
+    '<polyline class="curve-aff" points="' + affPts + '" vector-effect="non-scaling-stroke"/>' +
+    '</svg>';
+
+  const first = String(daily[0].day).slice(5);
+  const last = String(daily[daily.length - 1].day).slice(5);
+  const nowAff = daily[daily.length - 1].affinity || 0;
+  const totalTurns = daily.reduce((n, d) => n + (d.turns || 0), 0);
+  if (sub) sub.textContent = daily.length + ' 天 · 好感 ' + nowAff + ' · 共 ' + totalTurns + ' 轮';
+  if (hint) {
+    hint.textContent =
+      first + ' → ' + last + '　粉线 = 好感（0-100），蓝线 = 情绪（低—高），虚线是中线。';
+  }
+}
+
 function renderStList() {
   const box = $('st-list');
   box.innerHTML = '';
@@ -891,6 +958,8 @@ function renderStList() {
     box.appendChild(card);
   }
   $('st-foot').textContent = `${personas.length} 个角色`;
+  // 角色列表变了，曲线跟着换人
+  renderCurve();
 }
 
 function renderStSummary() {

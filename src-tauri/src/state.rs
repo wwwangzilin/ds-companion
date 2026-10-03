@@ -67,6 +67,27 @@ pub struct StateSample {
     pub affinity: u8,
 }
 
+/// 按天聚合的一个点（**长期**走势用）。
+///
+/// 【为什么不复用 `samples`】那个只留最近 40 次采样 —— 够看出"这一晚的起伏"，
+/// 但看不出"这一个月好感怎么涨的"：40 轮很可能只是一个晚上聊出来的。
+/// 一天一行的代价是几十字节（90 天上限 ≈ 几 KB），而"养成感"恰恰来自长期曲线。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DailyPoint {
+    /// `YYYY-MM-DD`（**页面报上来的本地日期**，见 `fold_daily` 的说明）
+    pub day: String,
+    /// 当天最后记录的好感（0-100）
+    pub affinity: u8,
+    /// 当天情绪的滚动均值（-1..1）
+    pub valence: f32,
+    /// 当天聊了几轮
+    pub turns: u32,
+}
+
+/// 长期曲线保留多少天。90 天足够看出趋势，又不至于把状态文件撑大。
+pub const DAILY_LIMIT: usize = 90;
+
 // ─────────────────────── 虚拟身体层 ───────────────────────
 //
 // 为什么要它：心理状态（心情/好感）回答"她怎么想"，身体层回答"她现在是什么感受"——
@@ -710,6 +731,9 @@ pub struct CharState {
     pub milestones: Vec<Milestone>,
     /// 最近若干次采样，画趋势用
     pub samples: Vec<StateSample>,
+    /// 按天聚合的历史（长期曲线用；见 `DailyPoint` 与 `fold_daily`）
+    #[serde(default)]
+    pub daily: Vec<DailyPoint>,
 
     // ── 通路自检的计数器（见 check_vitals）─────────────────────────────
     //
@@ -757,6 +781,7 @@ impl Default for CharState {
             first_seen_at: 0,
             milestones: Vec::new(),
             samples: Vec::new(),
+            daily: Vec::new(),
             last_fed_turn: 0,
             flat_turns: 0,
             affinity_stuck_turns: 0,
@@ -1226,6 +1251,54 @@ pub fn apply_turn(state: &mut CharState, sig: &Signal, intimate: bool, now: u64,
         affinity: state.affinity,
     });
     state.clamp_all();
+}
+
+/// 把当前状态并进"按天那一行"（长期曲线的数据来源）。
+///
+/// 【日期为什么不在这儿算】Rust 的 `std` 只有 UTC，要算本地日期就得拖一个时区库进来；
+/// 而这个项目既有的做法是**日期由页面报告**（`sense_day` / `proactive_day` / `review_day`
+/// 全是这么来的）。所以这里收字符串，并且只认 `YYYY-MM-DD` 的形状 —— 宁可少一行，
+/// 也不要往历史里写脏数据。
+///
+/// 【情绪为什么用滚动均值】当天最后一次的心情不代表一整天：晚上吵了一架不该让白天
+/// 那些好时候全看不见。好感则取"当天最后值"（它是累计量，本来就该看最终状态）。
+pub fn fold_daily(state: &mut CharState, day: Option<&str>) {
+    let Some(day) = day.map(str::trim).filter(|d| is_day_shape(d)) else {
+        return;
+    };
+    let aff = state.affinity.clamp(0, 100) as u8;
+    match state.daily.last_mut() {
+        Some(last) if last.day == day => {
+            last.turns = last.turns.saturating_add(1);
+            last.affinity = aff;
+            let n = last.turns as f32;
+            last.valence = (last.valence * (n - 1.0) + state.valence) / n;
+        }
+        _ => state.daily.push(DailyPoint {
+            day: day.to_string(),
+            affinity: aff,
+            valence: state.valence,
+            turns: 1,
+        }),
+    }
+    if state.daily.len() > DAILY_LIMIT {
+        let drop = state.daily.len() - DAILY_LIMIT;
+        state.daily.drain(0..drop);
+    }
+}
+
+/// 看着像 `YYYY-MM-DD` 吗。
+///
+/// 只验形状、不验真实性（"2026-13-45" 也放行）——校验日历是页面的活，
+/// 这里只负责挡住"今天""2026/10/03"这类明显不是日期的输入。
+fn is_day_shape(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 // ─────────────────────── 任务模式（本地启发式，零成本） ───────────────────────
@@ -1904,6 +1977,48 @@ mod tests {
         let s = sense_text("帮我把那个函数改成异步的");
         assert_eq!(s.intensity, 0.0, "没有情绪词就不该有情绪信号：{:?}", s);
         assert_eq!(s.valence, 0.0);
+    }
+
+    #[test]
+    /// 同一天只留一行、换天新起一行、坏日期一律不写
+    #[test]
+    fn fold_daily_aggregates_one_row_per_day() {
+        let mut s = CharState::default();
+        s.valence = 0.5;
+        fold_daily(&mut s, Some("2026-10-03"));
+        fold_daily(&mut s, Some("2026-10-03"));
+        assert_eq!(s.daily.len(), 1, "同一天只能有一行");
+        assert_eq!(s.daily[0].turns, 2);
+        fold_daily(&mut s, Some("2026-10-04"));
+        assert_eq!(s.daily.len(), 2, "换天要新起一行");
+        assert_eq!(s.daily[1].day, "2026-10-04");
+        assert_eq!(s.daily[1].turns, 1);
+    }
+
+    #[test]
+    fn fold_daily_ignores_bad_day() {
+        let mut s = CharState::default();
+        fold_daily(&mut s, None);
+        fold_daily(&mut s, Some(""));
+        fold_daily(&mut s, Some("今天"));
+        fold_daily(&mut s, Some("2026/10/03"));
+        fold_daily(&mut s, Some("2026-10-3"));
+        assert!(s.daily.is_empty(), "不像日期的输入一律不写：宁可少一行也不要脏数据");
+    }
+
+    #[test]
+    fn fold_daily_keeps_only_the_last_days() {
+        let mut s = CharState::default();
+        for i in 0..(DAILY_LIMIT + 5) {
+            // 造 DAILY_LIMIT+5 个互不相同的日期
+            let day = format!("2026-{:02}-{:02}", (i / 28) + 1, (i % 28) + 1);
+            fold_daily(&mut s, Some(&day));
+        }
+        assert_eq!(s.daily.len(), DAILY_LIMIT, "超上限要从最老的开始丢");
+        assert!(
+            !s.daily.iter().any(|d| d.day == "2026-01-01"),
+            "最老那天必须已经被丢掉了"
+        );
     }
 
     #[test]

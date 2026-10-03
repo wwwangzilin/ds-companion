@@ -585,6 +585,8 @@
     invoke('dsc_turn_report', {
       userText: String(userText || '').slice(0, 2000),
       hour: new Date().getHours(),
+      // 本地日期一并报上去：Rust 只有 UTC，按天聚合的长期曲线要靠它（见 fold_daily）
+      day: localDay(),
     })
       .then(function (r) {
         if (!r || !r.ok) return;
