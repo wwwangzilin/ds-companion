@@ -580,6 +580,37 @@
       });
   }
 
+  /** 替她把某一天的日记写下来。
+   *
+   * 【为什么正文由页面写、落盘由壳做】正文必须是她自己写的（模型），而注入脚本跑在
+   * 远程页面里、能力只有 capability 允许的那几条命令 —— 文件系统一律归壳。
+   *
+   * 【失败就什么都不做】日记缺一天不疼，一天问两次才烦人。所以失败**不**动
+   * `lastDiaryDay`（那是壳写的），下一轮壳会再给一次机会。
+   */
+  function writeDiary(d) {
+    if (!d || !d.day) return;
+    if (typeof window.__DSC_DIARY__ !== 'function') return;
+    Promise.resolve(window.__DSC_DIARY__(d))
+      .then(function (text) {
+        if (!text) return;
+        return invoke('dsc_diary_save', { day: d.day, text: text });
+      })
+      .then(function (r) {
+        if (typeof r !== 'string' || !r) return;
+        log('DIARY saved ' + d.day + ' → ' + r);
+        flashBadge('\u270E 写下 ' + d.day + ' 的日记');
+      })
+      .catch(function (e) {
+        log('DIARY save failed: ' + String((e && e.message) || e));
+      });
+  }
+
+  // 【为什么把它挂到页面】验收脚本要能**单独驱动这一段**：不然就只能靠"真聊一轮"
+  // 来触发它，而那需要登录态 + 一次真实隐藏请求。页面里每条隐藏链都是这么暴露的
+  // （__DSC_SENSE__ / __DSC_TASK_JUDGE__ / __DSC_DIARY__），这里保持一致。
+  window.__DSC_WRITE_DIARY__ = writeDiary;
+
   function reportTurn(userText) {
     if (!CFG.stateEnabled) return;
     invoke('dsc_turn_report', {
@@ -601,6 +632,9 @@
         // 本地判定贴着门槛 → 请模型再判一次，结果覆盖本地。只影响**下一轮**的注入
         //（本轮请求早发出去了，这也是任务模式本来的粒度）。
         if (r.wantTaskJudge) judgeTaskIntent(userText);
+        // 她自己的日记：壳挑好日子才给（同一天只给一次，`last_diary_day` 挡着）。
+        // 跟意图判断一样是**门控**的 —— 不是每轮都发一次隐藏请求。
+        if (r.diary) writeDiary(r.diary);
         if (r.taskChanged) {
           // 让主人看得见模式切了 —— 否则"她怎么突然不撒娇了"会变成新的困惑
           flashBadge(r.taskMode ? '\u2699 进入工作模式' : '\u2661 回到日常');

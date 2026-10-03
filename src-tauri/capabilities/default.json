@@ -34,6 +34,7 @@
     "allow-dsc-tools-brief",
     "allow-dsc-tool-wrap",
     "allow-tool-pending-list",
-    "allow-dsc-tool-proposal-decide"
+    "allow-dsc-tool-proposal-decide",
+    "allow-dsc-diary-save"
   ]
 }

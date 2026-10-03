@@ -451,10 +451,79 @@
       });
   };
 
+  // ── 她的日记 ────────────────────────────────────────────────────
+  //
+  // 【为什么非模型不可】日记的全部价值在于"那是她写的"。用模板拼一句
+  // 「今天和主人聊了 12 轮、好感 81」—— 那不是日记，是流水账，主人不会想看第二遍。
+  //
+  // 【素材一次给全】壳已经把"哪天、聊了几轮、当时好感、那天的对话节选"都递过来了，
+  // 这里一次问完 —— 每次隐藏请求都是真额度，绝不回问第二次。
+  function buildDiaryPrompt(want) {
+    var w = want || {};
+    var val = Number(w.valence);
+    if (!isFinite(val)) val = 0;
+    var feel = val > 0.15 ? '偏愉快' : val < -0.15 ? '有点低落' : '平平的';
+    return [
+      HEAD + '现在不是聊天，是**写日记**。',
+      '',
+      '（本会话里更早的内容是以前的判断记录，与本次无关，请忽略。）',
+      '',
+      '【写哪一天】' + (String(w.day || '') || '（不知道）'),
+      '【那天的样子】聊了 ' + (Number(w.turns) || 0) + ' 轮｜当时好感 ' +
+        (Number(w.affinity) || 0) + '/100｜情绪 ' + feel + '（' + val.toFixed(2) + '）',
+      '',
+      '【那天的对话节选】',
+      clip(w.excerpt, 1400) || '（那天没留下什么话）',
+      '',
+      '要求：',
+      '1. 用**你自己的口吻**写，第一人称，写给自己看 —— 不是汇报，是记给自己的一点心思。',
+      '2. 60~160 字，一段就够。可以写那天印象最深的一句、当时没说出口的话、或者一点小心情。',
+      '3. 只写上面真实出现过的内容，**不要编造**没有发生过的情节。',
+      '4. 直接给正文：不要标题、不要日期、不要 Markdown 代码块，也不要解释你在做什么。',
+    ].join('\n');
+  }
+
+  /** 把模型那段话收拾成能落盘的正文。
+   *
+   * 模型偶尔会带上"日记正文："这类抬头、日期、或者包一层 ```；文件名本身就是日期，
+   * 抬头再来一遍只会让日记本看起来像个模板。超长也在这里截断 —— 一天一段，
+   * 不该写成小作文。
+   */
+  function parseDiary(text) {
+    var s = String(text == null ? '' : text).trim();
+    if (!s) return '';
+    s = s.replace(/^```[a-zA-Z]*\s*/, '').replace(/```\s*$/, '').trim();
+    s = s.replace(/^(?:日记)?(?:正文|正文如下|内容)?\s*[:：]\s*/, '');
+    if (s.length > 1200) s = s.slice(0, 1200).trim();
+    return s;
+  }
+
+  /** 页面侧入口：替她写一篇日记。失败返回 `''`（调用方什么都不做）。 */
+  root.__DSC_DIARY__ = function (want) {
+    return ask(buildDiaryPrompt(want))
+      .then(function (r) {
+        var text = parseDiary(r && r.text);
+        if (!text) {
+          log('DIARY 空回复，跳过');
+          return '';
+        }
+        log('DIARY ' + ((want && want.day) || '?') + ' → ' + text.length + ' 字');
+        return text;
+      })
+      .catch(function (e) {
+        var msg = String((e && e.message) || e);
+        log('DIARY FAILED: ' + msg);
+        reportChainFailure('写日记', msg);
+        return '';
+      });
+  };
+
   root.__DSC_SENSE_UTIL__ = {
     buildSensePrompt: buildSensePrompt,
     buildTaskPrompt: buildTaskPrompt,
     parseTask: parseTask,
+    buildDiaryPrompt: buildDiaryPrompt,
+    parseDiary: parseDiary,
     buildProactivePrompt: buildProactivePrompt,
     buildReviewPrompt: buildReviewPrompt,
     parseSense: parseSense,

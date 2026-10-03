@@ -23,6 +23,9 @@
 
 mod chat;
 mod config;
+// pub：给集成测试用（tests/diary_fs.rs 要靠它验证**真实落盘** ——
+// 单元测试里没法换数据目录，而 `DSC_DATA_DIR` 是进程级的）
+pub mod diary;
 mod digest;
 mod memory;
 mod personas;
@@ -293,6 +296,23 @@ fn memory_extract(app: tauri::AppHandle) -> Result<(), String> {
 ///
 /// 【为什么放 Rust】情绪打分、状态演化、clamp、门控判断都是纯逻辑，
 /// 放这边能单测；页面只管把"用户说了什么"递进来。
+/// 请页面替她写一篇日记（今天第一次交互时给一次）。
+///
+/// 【为什么写的是「上一篇该写的那天」而不是今天】今天才刚开始，没什么可写的；
+/// 而「第二天回顾昨天」正是真日记的做法。素材一起带过去，免得页面再回问一趟。
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct DiaryAsk {
+    /// 要写的是哪一天（`YYYY-MM-DD`）
+    day: String,
+    /// 那天聊了几轮 / 当时的好感 / 那天的情绪均值
+    turns: u32,
+    affinity: u8,
+    valence: f32,
+    /// 那天对话的节选 —— 给她"具体的事"可写，而不是硬挤一句空话
+    excerpt: String,
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 struct TurnReport {
@@ -323,6 +343,10 @@ struct TurnReport {
     task_signal: state::TaskSignal,
     /// 本地判定贴着门槛、值得请模型再判一次（门控在 Rust 算，见 `want_task_judge`）
     want_task_judge: bool,
+    /// 请页面替她写一篇日记（`None` = 这一轮不用写）。
+    ///
+    /// 只在「今天还没写过、且有个更早的日子可以回顾」时给一次，见 `diary::pick_day`。
+    diary: Option<DiaryAsk>,
     /// 通路自检的告警（空 = 没看出问题）。
     ///
     /// 【为什么要跟着每轮回来】"机制没坏、通路断了"这类问题（情绪冻结、饿着没人管）
@@ -360,6 +384,35 @@ fn active_character() -> String {
     personas::active_character_id(config::load().active_persona.as_deref())
 }
 
+/// 把这一天的日记落盘（页面侧让模型写完，再把它送回来）。
+///
+/// 【为什么写盘必须留在壳里】注入脚本跑在**远程页面**里，它的能力只有
+/// 「capability 里允许的那几条命令」—— 任何文件系统能力都不该给它。所以这里只收
+/// 一段文本，文件名由壳自己拼（`diary/<角色>/YYYY-MM-DD.md`），日期形状还要再挡一道。
+#[tauri::command]
+fn dsc_diary_save(day: String, text: String) -> Result<String, String> {
+    // 【为什么角色 id 不由页面给】注入脚本根本不知道现在是谁 —— 全项目只有
+    // `personas::active_character_id` 一个来源，这里照样走它（与其余命令一致）。
+    let cid = active_character();
+    if cid.is_empty() {
+        return Err("当前没启用角色，不写日记".to_string());
+    }
+    let path = diary::save_day(&cid, &day, &text)?;
+    // 记下"这天写过了"：同一天不再问第二次
+    let mut st = state::load_state(&cid);
+    st.last_diary_day = day.clone();
+    if let Err(e) = state::save_state(&st) {
+        shell_log(&format!("[diary] 记日记日期失败：{e}"));
+    }
+    shell_log(&format!(
+        "[diary] {} 写下了 {} 字（{}）",
+        day,
+        text.chars().count(),
+        path.display()
+    ));
+    Ok(path.display().to_string())
+}
+
 #[tauri::command]
 /// `day` 是**页面报上来的本地日期**（`YYYY-MM-DD`）。Rust 的 `std` 只有 UTC，
 /// 算本地日期得先拖个时区库进来 —— 而项目既有的做法就是"日期由页面报告"
@@ -391,6 +444,7 @@ fn dsc_turn_report(
             task_text: String::new(),
             task_signal: state::TaskSignal::default(),
             want_task_judge: false,
+            diary: None,
             vitals: Vec::new(),
         };
     }
@@ -423,6 +477,33 @@ fn dsc_turn_report(
     let want =
         !task_mode && state::want_model_sense(&cfg.sense_mode, cfg.sense_every_turns, &st, &sig);
     let saved = state::save_state(&st).unwrap_or(st);
+
+    // 日记：今天还没写过、且"上一个有记录的日子"不是今天 —— 就把那天交给她写。
+    //
+    // 【为什么用 daily 找"上一天"而不是自己算日期】Rust 的 std 只有 UTC，而 `daily`
+    // 里本来就有"哪天聊过"（页面报的本地日期）—— 取最后一行不等于今天的那个即可。
+    // 中间断过几天也能自动对上：写的是"上一个有记录的日子"，不是死板的"昨天"。
+    //
+    // 【为什么一次给一篇】同一天不再问第二次（`last_diary_day` 挡着），否则每轮都会想写，
+    // 那就不是日记而是流水账了。
+    let diary = {
+        // 挑哪天交给 `diary::pick_day`（纯函数，有单测）—— 这段逻辑一行放错就会变成
+        // "昨天写了两遍"或者"永远不写"，不值得赌在肉眼审阅上。
+        match diary::pick_day(&saved.daily, day.as_deref().unwrap_or(""), &saved.last_diary_day) {
+            Some(d) => {
+                let turns = chat::read_day(&d.day);
+                let keep = turns.len().min(6);
+                Some(DiaryAsk {
+                    day: d.day.clone(),
+                    turns: d.turns,
+                    affinity: d.affinity,
+                    valence: d.valence,
+                    excerpt: chat::render_for_model(&turns[turns.len() - keep..], 120, 180),
+                })
+            }
+            _ => None,
+        }
+    };
 
     // ③ 对方：从"这条消息 + 隔了多久 + 现在几点"推
     let mut user = state::load_user_state();
@@ -518,6 +599,7 @@ fn dsc_turn_report(
         task_text: state::render_task_block(),
         task_signal: task_sig.clone(),
         want_task_judge: state::want_task_judge(task_sig.score),
+        diary,
         vitals,
     }
 }
@@ -2033,6 +2115,7 @@ pub fn run() {
             memory_touch,
             memory_ingest,
             memory_extract,
+            dsc_diary_save,
             dsc_turn_report,
             dsc_sense_reserve,
             dsc_sense_apply,

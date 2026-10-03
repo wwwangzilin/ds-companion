@@ -734,6 +734,9 @@ pub struct CharState {
     /// 按天聚合的历史（长期曲线用；见 `DailyPoint` 与 `fold_daily`）
     #[serde(default)]
     pub daily: Vec<DailyPoint>,
+    /// 上次写日记写的是哪一天（`YYYY-MM-DD`）—— 挡"同一天问第二次"
+    #[serde(default)]
+    pub last_diary_day: String,
 
     // ── 通路自检的计数器（见 check_vitals）─────────────────────────────
     //
@@ -782,6 +785,7 @@ impl Default for CharState {
             milestones: Vec::new(),
             samples: Vec::new(),
             daily: Vec::new(),
+            last_diary_day: String::new(),
             last_fed_turn: 0,
             flat_turns: 0,
             affinity_stuck_turns: 0,
@@ -1979,7 +1983,6 @@ mod tests {
         assert_eq!(s.valence, 0.0);
     }
 
-    #[test]
     /// 同一天只留一行、换天新起一行、坏日期一律不写
     #[test]
     fn fold_daily_aggregates_one_row_per_day() {
