@@ -7,6 +7,14 @@ license = "MIT"
 edition = "2021"
 rust-version = "1.77.2"
 
+# Tauri mobile（Android）要求一个库目标：Android 的 MainActivity 通过 JNI 调 lib 里的
+# mobile_entry_point。三个 crate-type 都是 Tauri 模板规定的 ——
+# staticlib / cdylib 给 Android 链接用，rlib 给桌面端的 main.rs 用。
+# 注意：带上这三个会略微拖慢桌面构建（cdylib 要额外链接一次），这是官方模板的既定代价。
+[lib]
+name = "ds_companion_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
 
