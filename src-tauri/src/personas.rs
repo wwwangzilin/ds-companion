@@ -439,6 +439,63 @@ pub fn active_character_id(active: Option<&str>) -> String {
     }
 }
 
+/// 当前角色**可以被呼唤的名字**（"叫她的名字也算亲密"）。
+///
+/// 【为什么从正文里抽，而不是加配置项】所有人的设第一行都是同一个约定：
+/// `你是「露娜」（Luna），…` / `你是「铃」（Suzu），…` —— 名字就在第一处 `「」` 里。
+/// 加一个配置字段意味着每换一个角色都要重新填一遍，而约定已经在那儿了。
+///
+/// 【它修的是什么】`state.rs` 的呼唤词表里曾经**硬编码了「露娜」**：只有叫她名字
+/// 才算亲密（好感 +0.5、解锁"第一次叫我主人"）。换个角色就叫不动她 —— 那是唯一一处
+/// 引擎级偏心，文案再怎么改都追不上。现在名字由人设决定。
+///
+/// 抽不到就返回空：呼唤判定退回通用词（"在吗""在不在"），**不会**因为抽不到而误判。
+pub fn call_names(active: Option<&str>) -> Vec<String> {
+    // 原版（不注入人设）没有角色身份，也就没有名字
+    let Some(p) = effective_persona(active) else {
+        return Vec::new();
+    };
+    let line = p.body.lines().next().unwrap_or("");
+    let mut out = Vec::new();
+    if let Some(name) = first_quoted(line) {
+        out.push(name);
+    }
+    // `你是「露娜」（Luna）` 里的英文名也认 —— 主人可能直接打 Luna
+    if let Some(en) = first_paren_ascii(line) {
+        out.push(en);
+    }
+    out
+}
+
+/// 一行里第一处 `「…」` 的内容（人设名字的稳定约定）。
+/// 太长的不算名字（那是引文），宁可抽不到也不要把一段话当名字。
+fn first_quoted(line: &str) -> Option<String> {
+    let start = line.find('「')? + '「'.len_utf8();
+    let rest = &line[start..];
+    let end = rest.find('」')?;
+    let name = rest[..end].trim();
+    if name.is_empty() || name.chars().count() > 12 {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// 紧随其后的 `（Luna）` 里的 ASCII 名字。只认全 ASCII —— 中文括注多半是解释不是名字。
+fn first_paren_ascii(line: &str) -> Option<String> {
+    let start = line.find('（')? + '（'.len_utf8();
+    let rest = &line[start..];
+    let end = rest.find('）')?;
+    let name = rest[..end].trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 pub fn list_personas() -> Vec<Persona> {
     let mut out = Vec::new();
     let dir = personas_dir();

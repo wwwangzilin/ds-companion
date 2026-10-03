@@ -73,6 +73,14 @@
               </div>
             </div>
             <p class="hint" id="cost-hint"></p>
+            <!-- 注入总开关。与上面那个「关闭」不是一回事：那个只管**人设块**
+                 （状态 / 工具 / 回锚照进不误），这个是唯一的"一个字节都不注入"。
+                 托盘右键菜单里有同一个开关，两边读的都是 config 的 injectEnabled。 -->
+            <div class="seg small" id="mute" style="margin-top: 10px">
+              <span class="seg-pill" id="mute-pill"></span>
+              <button data-v="on">正常注入</button>
+              <button data-v="off">静音</button>
+            </div>
           </section>
 
           <section class="editor">

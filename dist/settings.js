@@ -225,6 +225,33 @@ function renderCadence() {
   $('cost-hint').textContent = CADENCE_HINT[cfg.cadence] || '';
 }
 
+function renderMute() {
+  const seg = $('mute');
+  if (!seg) return;
+  // 没配过这个字段 = 开着（老 config.json 里没有它，语义上就是"照常注入"）
+  const cur = cfg.injectEnabled === false ? 'off' : 'on';
+  let active = null;
+  for (const b of seg.querySelectorAll('button')) {
+    const on = b.dataset.v === cur;
+    b.classList.toggle('on', on);
+    if (on) active = b;
+  }
+  placePill('mute-pill', active);
+}
+
+/** 静音总开关：关掉之后页面侧整条注入路径直接跳过（连轮数都不推进）。 */
+async function setMute(v) {
+  const want = v !== 'off';
+  if ((cfg.injectEnabled !== false) === want) return; // 没变就别写盘
+  cfg.injectEnabled = want;
+  renderMute();
+  try {
+    await patchCfg({ injectEnabled: want });
+  } catch (e) {
+    fail(e);
+  }
+}
+
 function renderStatus() {
   const active = effectivePersona();
   const on = !!active && cfg.cadence !== 'off';
@@ -246,6 +273,7 @@ function renderAll() {
   renderList();
   renderActiveOptions();
   renderCadence();
+  renderMute();
   renderStatus();
   // 人设变了，状态页的角色列表也要跟着变（用缓存，不额外读盘）
   if ($('st-list')) renderStList();
@@ -1795,6 +1823,9 @@ $('f-body').addEventListener('input', renderCount);
 $('active').addEventListener('change', (e) => setActive(e.target.value));
 for (const b of $('cadence').querySelectorAll('button')) {
   b.addEventListener('click', () => setCadence(b.dataset.v));
+}
+for (const b of $('mute').querySelectorAll('button')) {
+  b.addEventListener('click', () => setMute(b.dataset.v));
 }
 
 // 日志页的绑定

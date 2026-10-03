@@ -944,8 +944,14 @@ const NEG: &[&str] = &[
 ];
 /// 亲昵称呼：代表关系在走近（只影响好感，不影响情绪极性）
 const INTIMATE: &[&str] = &["主人", "老婆", "老公", "宝贝", "亲爱的", "喵", "抱"];
-/// 呼唤：他在找她 —— 说明"她在不在"对他是重要的（也只影响好感）
-const CALL: &[&str] = &["在吗", "在不在", "在么", "你在", "喂", "露娜"];
+/// 呼唤：他在找她 —— 说明"她在不在"对他是重要的（也只影响好感）。
+///
+/// 【这张表里为什么没有角色名】角色名不写死在这儿 —— 当前角色叫什么由人设正文决定，
+/// 运行时经 `sense_text_with` 传进来（`personas::call_names` 从第一行抽）。
+/// 曾经这里硬编码着「露娜」：于是**只有叫她名字才算亲密**（好感 +0.5、解锁
+/// "第一次叫我主人"），换个角色怎么叫都没反应 —— 那是唯一一处引擎级偏心，
+/// 改人设文案永远追不上。
+const CALL: &[&str] = &["在吗", "在不在", "在么", "你在", "喂"];
 /// 关心与嘱咐：他在照顾她。
 ///
 /// 旧词表里**一条都没有**这类词，而"早点睡""别熬夜""注意身体"对关系的分量
@@ -991,6 +997,14 @@ fn count_hits(text: &str, words: &[&str], hits: &mut Vec<String>) -> usize {
 /// 它当然不如模型懂语境 —— 但它是**零额度、每轮即时**的，正好当"门控的第一道闸"：
 /// 强度低的普通聊天用它就够了，只有强度高或攒够轮数时才值得花一次额度让模型再看。
 pub fn sense_text(text: &str) -> Signal {
+    sense_text_with(text, &[])
+}
+
+/// 同 `sense_text`，外加**当前角色的名字**：叫她的名字也算"在找她"（亲密信号）。
+///
+/// 名字由调用方从人设正文抽出来传（`personas::call_names`），不写死在这里 ——
+/// 详见 `CALL` 上的注释。`sense_text` 保留成"没有名字"的版本，老调用点与测试不受影响。
+pub fn sense_text_with(text: &str, names: &[String]) -> Signal {
     let t = text.trim();
     if t.is_empty() {
         return Signal::default();
@@ -999,7 +1013,17 @@ pub fn sense_text(text: &str) -> Signal {
     let pos_words = count_hits(t, POS, &mut hits);
     let mut neg = count_hits(t, NEG, &mut hits);
     let care = count_hits(t, CARE, &mut hits);
-    let call = count_hits(t, CALL, &mut hits);
+    let mut call = count_hits(t, CALL, &mut hits);
+    // 角色名：命中即算呼唤。同一个名字只记一次（避免"铃…铃…铃"把好感刷上去）
+    for n in names {
+        let n = n.trim();
+        if !n.is_empty() && t.contains(n) {
+            call += 1;
+            if hits.len() < 8 {
+                hits.push(n.to_string());
+            }
+        }
+    }
     let intimate_hits = count_hits(t, INTIMATE, &mut hits);
     let fed = sense_feed(t);
     if fed && hits.len() < 8 {
@@ -1216,7 +1240,9 @@ pub fn apply_turn(state: &mut CharState, sig: &Signal, intimate: bool, now: u64,
 //   · 把【状态】块压成一行（省 token，也少给玩闹的许可）
 //   · 工作态下**不因负面信号扣好感**（工作引起的情绪不记在关系账上）
 //
-// 【铁律】不许上 LLM —— 跟 sense_text 一样纯关键词/结构判断，零延迟零成本。
+// 【本地打底，模型复核】本层仍是纯关键词/结构判断（零延迟零成本），但**贴着门槛的
+// 轮次会请模型再判一次**（`want_task_judge` → 页面侧 `__DSC_TASK_JUDGE__`）——
+// 那正是本地最没把握的几档。日常闲聊轮不会因此多花一次请求。
 // 【判据】强信号命中即进；中信号要凑够 3 分；进入后连续 2 轮没信号才退出
 //         （防对话中间忽开忽关）。宁可漏判（顶多她多撒一次娇），不可误判
 //         （日常调情被当成干活才真扫兴）。
@@ -1297,6 +1323,20 @@ pub fn sense_task(text: &str) -> TaskSignal {
         score,
         hits,
     }
+}
+
+/// 这一轮的任务判定要不要请模型再判一次 —— "情感/意图判断上 LLM"在这里落地。
+///
+/// 【为什么只在门槛附近问】本地是关键词打分（`sense_task`），大多数轮它很确定：
+/// 命中强信号（score ≥ 5）就是干活，负分就是闲聊/撒娇。真正容易错的是**贴着门槛**
+/// 的那几档：2 分（差一点进，可能其实在派活）、3~4 分（刚够进，可能其实在逗她）。
+/// 模型判一次要花一次隐藏请求（网页额度不要钱，但要等），所以只放它们过去，
+/// 不做每轮的常规开销。
+///
+/// 【判据的由来】门槛是 `TASK_ENTER_SCORE = 3`：2 分是"差一点进"，3/4 分是"刚够进"。
+/// 其余档位本地足够确定，问了纯属浪费。
+pub fn want_task_judge(score: i32) -> bool {
+    matches!(score, 2 | 3 | 4)
 }
 
 /// 任务模式的运行时状态（**不落盘**）：与 CharState 并列存在内存里。
@@ -1890,7 +1930,16 @@ mod tests {
     /// 呼唤她（"在吗""露娜"）也算亲密 —— 他在找她，这件事本身就是信号
     #[test]
     fn calling_her_counts_as_intimate() {
-        assert!(sense_text("露娜在吗").intimate, "叫她的名字 / 问在不在都算亲密");
+        // 名字不再硬编码在词表里：传进来才算数
+        assert!(sense_text("在吗").intimate, "问在不在算亲密（通用词，与角色无关）");
+        assert!(
+            sense_text_with("露娜，你看这个", &["露娜".to_string()]).intimate,
+            "叫当前角色的名字算亲密"
+        );
+        assert!(
+            !sense_text("露娜，你看这个").intimate,
+            "名字不在通用表里：不传名字就不算 —— 这正是原来那处偏心"
+        );
         assert!(!sense_text("这个 bug 怎么修").intimate, "技术话不该被算成亲密");
     }
 

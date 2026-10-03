@@ -238,6 +238,11 @@ pub fn weight_of(m: &MemoryItem, now_ms: u64) -> f32 {
 }
 
 /// 注入用的顺序：权重高的在前，同分时新的在前（可预期，不会每次注入顺序都变）。
+///
+/// 【现在注入链路走的是 `list_weighted`】因为权重得跟着记忆一起给到页面
+/// （页面侧的检索要用它）。这个函数留着给"只要 item、不要权重"的调用方，
+/// 所以显式 allow —— 别看到没被调就删掉。
+#[allow(dead_code)]
 pub fn list_for_inject() -> Vec<MemoryItem> {
     let now = now_ms();
     let mut out = list_memories();
@@ -255,7 +260,7 @@ pub fn list_for_inject() -> Vec<MemoryItem> {
 /// 【为什么不给 `MemoryItem` 加字段】那样会牵连所有构造点（parse/merge/一堆测试），
 /// 而且**有被写进 .md 的风险** —— 权重是随时在变的运行时值，落盘就是脏数据。
 /// 用 `flatten` 包一层，前端照样能读到 item 的所有字段。
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct WeightedMemory {
     #[serde(flatten)]

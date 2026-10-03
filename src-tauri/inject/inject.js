@@ -258,6 +258,18 @@
     if (via === 'xhr') stats.viaXhr++;
     else stats.viaFetch++;
 
+    // 【注入总开关】关着就当普通浏览器用：不改 body、不推进轮数、各块开关一律不动。
+    //
+    // 【为什么放在 bumpTurn 之前】静音期间那些对话**不该算"和她聊了几轮"** ——
+    // 否则解除静音之后，cadence / 回锚 / 自我修订会按一个虚高的轮数触发。
+    // 这是"总闸"与"各块的开关"的区别：后者只是这段不拼进去，轮数照走。
+    if (CFG && CFG.injectEnabled === false) {
+      stats.skipped++;
+      log('skip(' + via + ') muted（注入总开关关着）');
+      publishReceipt(false, 'muted', [], 0, via, false);
+      return null;
+    }
+
     var d = decide(body);
     var turnIndex = bumpTurn(body);
     var prefix = '';
@@ -269,7 +281,9 @@
     }
     // 【工作模式】放最前：它是"这一轮是什么场合"，比人设和状态更该先被读到。
     // 状态块在工作态下已经由壳压成一行了（见 render_state_block），这里只负责把它摆对位置。
-    addBlock('工作模式', CFG.taskText ? CFG.taskText + '\n' : '');
+    // 【为什么看 taskMode 而不是 taskText】taskText 现在**两个态都给**（见 Rust 侧注释）：
+    // 模型二判可能把日常改判成工作，那时页面手里得已经有正文；用不用由 taskMode 决定。
+    addBlock('工作模式', CFG.taskMode && CFG.taskText ? CFG.taskText + '\n' : '');
     if (d.ok) addBlock('人设', MARK_HEAD + '\n' + d.block + '\n' + MARK_TAIL + '\n');
     // 【可用工具】靠前：它是"这一轮能做什么"，比心情/好感更该先被读到
     addBlock('工具', CFG.toolText ? CFG.toolText + '\n' : '');
@@ -542,6 +556,30 @@
   // 三个层一起推：角色心理（心情/好感）、虚拟身体（困倦/体力/心跳）、
   // 以及**对方的**状态（累不累、忙不忙、投入度）—— 后两个都是壳从
   // "这句话 + 隔了多久 + 现在几点"推出来的，这里只把原料递过去。
+  /** 请模型再判一次"这句是在派活还是在闲聊"。
+   *
+   * 【为什么要有这条】本地 `sense_task` 是关键词打分，它自己的注释就写着"宁可漏判、
+   * 不可误判"——"帮我看看这个"和"今天好累"在词面上确实难分。模型判一次要花一次
+   * 隐藏请求，所以门控放在 Rust：只有分数贴着门槛（2/3/4 分）才走这条。
+   *
+   * 失败一律**保持本地判断**：多撒一次娇，比把日常当加班安全。
+   */
+  function judgeTaskIntent(userText) {
+    if (typeof window.__DSC_TASK_JUDGE__ !== 'function') return;
+    var local = !!CFG.taskMode;
+    var sig = CFG.taskSignal || {};
+    Promise.resolve(window.__DSC_TASK_JUDGE__(userText, local, sig.score || 0, sig.hits || []))
+      .then(function (r) {
+        if (!r || typeof r.task !== 'boolean' || r.task === local) return;
+        CFG.taskMode = r.task;
+        flashBadge(r.task ? '\u2699 进入工作模式 · 模型判定' : '\u2661 回到日常 · 模型判定');
+        log('TASK mode=' + (r.task ? 'work' : 'daily') + '（模型覆盖本地）');
+      })
+      .catch(function () {
+        /* 失败保持本地判定 */
+      });
+  }
+
   function reportTurn(userText) {
     if (!CFG.stateEnabled) return;
     invoke('dsc_turn_report', {
@@ -557,6 +595,10 @@
         CFG.anchorEveryTurns = r.anchorEveryTurns;
         CFG.taskMode = !!r.taskMode;
         CFG.taskText = r.taskText || '';
+        CFG.taskSignal = r.taskSignal || null;
+        // 本地判定贴着门槛 → 请模型再判一次，结果覆盖本地。只影响**下一轮**的注入
+        //（本轮请求早发出去了，这也是任务模式本来的粒度）。
+        if (r.wantTaskJudge) judgeTaskIntent(userText);
         if (r.taskChanged) {
           // 让主人看得见模式切了 —— 否则"她怎么突然不撒娇了"会变成新的困惑
           flashBadge(r.taskMode ? '\u2699 进入工作模式' : '\u2661 回到日常');

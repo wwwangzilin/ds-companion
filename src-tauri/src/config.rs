@@ -122,6 +122,15 @@ pub struct AppConfig {
     /// 那个毛病就一直在。手动 on/off 是给"它判错了"准备的逃生口。
     #[serde(default = "default_task_mode")]
     pub task_mode: String,
+
+    // ── 总开关 ──
+    /// **注入总开关**：关掉之后一个字节都不往 `body.prompt` 里加 —— 就是"把它当普通浏览器用"。
+    ///
+    /// 【为什么需要】原来没有单一总开关：`cadence` 只管**人设块**，状态 / 工具 / 回锚
+    /// 各自还按各自的开关照常注入，想完全静默得逐个关掉（README §6 与 inject.js 的注释
+    /// 都把这条记成已知缺口）。这道闸是唯一的总闸：关 = 页面侧直接跳过整条注入路径。
+    #[serde(default = "default_true")]
+    pub inject_enabled: bool,
 }
 
 fn default_task_mode() -> String {
@@ -226,6 +235,7 @@ impl Default for AppConfig {
             tool_max_per_turn: default_tool_per_turn(),
             tools_write_enabled: false,
             task_mode: default_task_mode(),
+            inject_enabled: true,
         }
     }
 }
@@ -280,7 +290,8 @@ pub struct InjectPayload {
     pub extract_every_turns: u32,
     /// 隐藏会话接着往下写的上限：页面侧 ask() 用它决定攒够几次换个新会话（0 = 不轮换）
     pub hidden_chain_turns: u32,
-    pub memories: Vec<crate::memory::MemoryItem>,
+    /// 可见记忆：**连带权重一起**给过去（页面侧的检索要用 weight 判"够不够格参与"）
+    pub memories: Vec<crate::memory::WeightedMemory>,
 
     // ── 状态 / 回锚 / 感知 / 空闲主动 ──
     pub state_enabled: bool,
@@ -318,6 +329,9 @@ pub struct InjectPayload {
     pub tool_max_per_turn: u32,
     /// 【可用工具】块（Rust 渲染好；空 = 没开或没配工作区，页面就别解析调用）
     pub tool_text: String,
+
+    /// 注入总开关：关 = 页面侧整条注入路径直接跳过（连轮数都不推进），当普通浏览器用
+    pub inject_enabled: bool,
 }
 
 pub fn inject_payload() -> InjectPayload {
@@ -330,12 +344,16 @@ pub fn inject_payload() -> InjectPayload {
     // 可见性：全局（无角色）+ 当前激活角色的。
     // 没有角色激活时，带角色的记忆一条都不给（沿用 gal 的语义）。
     //
-    // 顺序用**权重降序**（`list_for_inject`）：importance 打底、随时间衰减、被用到回血。
+    // 顺序用**权重降序**（`list_weighted`）：importance 打底、随时间衰减、被用到回血。
     // 页面按字数预算截断时是从头开始取的，所以这个顺序就是"谁会进上下文"的答案。
+    //
+    // 【为什么整条链路都带权重】页面侧（selector.js）要用它做两件事：
+    //   ① "触发词没命中时这条够不够格参与"的判定（原来只看 importance >= 4）；
+    //   ② 打分排序。只给 item 的话页面拿不到 `weight_of` 的结果，衰减/回血等于白算。
     let memories = if cfg.memory_enabled {
-        crate::memory::list_for_inject()
+        crate::memory::list_weighted()
             .into_iter()
-            .filter(|m| m.character_id.is_empty() || m.character_id == character_id)
+            .filter(|w| w.item.character_id.is_empty() || w.item.character_id == character_id)
             .collect()
     } else {
         Vec::new()
@@ -408,6 +426,7 @@ pub fn inject_payload() -> InjectPayload {
         tools_enabled: cfg.tools_enabled,
         tool_max_per_turn: cfg.tool_max_per_turn,
         tool_text: crate::tools::inject_block(&cfg),
+        inject_enabled: cfg.inject_enabled,
     }
 }
 
@@ -425,6 +444,7 @@ mod tests {
         assert_eq!(d.hidden_chain_turns, 20, "隐藏会话往下接必须封顶：默认每 20 次换新会话");
         assert!(d.memory_enabled);
         assert_eq!(d.active_persona, None);
+        assert!(d.inject_enabled, "总开关默认必须开着 —— 装好就该照常注入");
     }
 
     /// 老 config.json 没有新字段时不能整份解析失败、悄悄退到全默认

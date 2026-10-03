@@ -372,8 +372,89 @@
     });
   };
 
+  /** 隐藏链（情绪感知 / 主动开口 / 自我修订）失败时的统一上报。
+   *
+   * 【为什么值得单独一个函数】这三条链都跑在隐藏会话里、都由 catch 兜住，
+   * 而 catch 里"只 log"就等于静默失败 —— 日志在 %TEMP%\ds-companion.log 里躺着，
+   * 设置页看不到。体检对象（inject.js 里的 health）是主人唯一能看见的那一面，
+   * 所以失败必须往那儿写一份。顺带记下 hidden / online：这两项能一眼区分
+   * "页面在后台被节流"和"真的断网/没登录态"。
+   */
+  function reportChainFailure(what, msg) {
+    try {
+      var h = root.__DSC_HEALTH__;
+      if (!h) return;
+      var doc = root.document || {};
+      var online = root.navigator ? root.navigator.onLine : '?';
+      h.lastError = what + '失败：' + msg + '（hidden=' + !!doc.hidden + ' online=' + online + '）';
+      if (typeof root.__DSC_PUBLISH_HEALTH__ === 'function') {
+        root.__DSC_PUBLISH_HEALTH__('chain-failed');
+      }
+    } catch (e) {
+      /* 上报本身绝不能影响主流程 */
+    }
+  }
+
+  // ── 意图判断（任务模式的模型二判） ──────────────────────────────
+  //
+  // 【为什么要模型】本地 `sense_task` 是纯关键词打分，它自己的注释写着"宁可漏判、
+  // 不可误判"—— 而"帮我看看这个"和"今天好累"在词面上确实难分。Rust 侧只把
+  // **贴着门槛**的那几档放过来（`state::want_task_judge`），所以这不是每轮的常规开销。
+  function buildTaskPrompt(userText, localTask, score, hits) {
+    return [
+      HEAD + '判断下面这句话：用户是在**派活 / 问技术问题**，还是在**闲聊 / 表达情绪**？',
+      '',
+      '（本会话里更早的内容是以前的判断记录，与本次无关，请忽略；只看下面这一句。）',
+      '',
+      '【用户这句话】',
+      clip(userText, 500) || '（空）',
+      '',
+      '本地关键词粗判：' + (localTask ? '看着像干活' : '看着像闲聊') +
+        '（分数 ' + score + (hits && hits.length ? '，命中：' + hits.join('/') : '') + '）',
+      '',
+      '要求：',
+      '1. 只回答一行 JSON，不要任何别的文字：{"task": true} 或 {"task": false}',
+      '2. task=true 的定义：用户在**要求角色动手做事**——改代码、查资料、排错、写文档、执行命令、安排任务。',
+      '3. 只是提到技术名词、或者在抱怨工作、说自己累，一律算 task=false。',
+      '4. 拿不准就判 false：把她当日常伴侣，比当工具安全。',
+    ].join('\n');
+  }
+
+  function parseTask(text) {
+    var m = String(text || '').match(/\{[\s\S]*?\}/);
+    if (!m) return null;
+    try {
+      var o = JSON.parse(m[0]);
+      return typeof o.task === 'boolean' ? { task: o.task } : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** 页面侧入口：判一次"这轮是不是在派活"。失败返回 null（调用方保持本地判定）。 */
+  root.__DSC_TASK_JUDGE__ = function (userText, localTask, score, hits) {
+    return ask(buildTaskPrompt(userText, localTask, score, hits))
+      .then(function (r) {
+        var parsed = parseTask(r && r.text);
+        if (!parsed) {
+          log('TASK-JUDGE 解析失败：' + clip(String((r && r.text) || ''), 120));
+          return null;
+        }
+        log('TASK-JUDGE model=' + parsed.task + ' local=' + localTask + ' score=' + score);
+        return parsed;
+      })
+      .catch(function (e) {
+        var msg = String((e && e.message) || e);
+        log('TASK-JUDGE FAILED: ' + msg);
+        reportChainFailure('意图判断', msg);
+        return null;
+      });
+  };
+
   root.__DSC_SENSE_UTIL__ = {
     buildSensePrompt: buildSensePrompt,
+    buildTaskPrompt: buildTaskPrompt,
+    parseTask: parseTask,
     buildProactivePrompt: buildProactivePrompt,
     buildReviewPrompt: buildReviewPrompt,
     parseSense: parseSense,
@@ -386,12 +467,19 @@
     return sense(report).catch(function (e) {
       var msg = String((e && e.message) || e);
       log('SENSE FAILED: ' + msg);
+      reportChainFailure('情绪感知', msg);
       return { ok: false, error: msg };
     });
   };
   root.__DSC_PROACTIVE_LINE__ = function () {
     return proactiveLine().catch(function (e) {
-      log('PROACTIVE-LINE FAILED: ' + String((e && e.message) || e));
+      var msg = String((e && e.message) || e);
+      log('PROACTIVE-LINE FAILED: ' + msg);
+      // 【不只是打日志】"她会自己开口"是这个产品最像活人的机制，而它以前**静默失败**：
+      // 主人只能从"她怎么总不开口"倒推，翻日志才知道。这里按 tool-loop 那套把证据
+      // 写进体检对象（设置页直接看得见），并记下当时的页面可见性 —— WebView 被最小化 /
+      // 收进托盘时的节流，正是这类 Failed to fetch 的常见成因。
+      reportChainFailure('主动开口', msg);
       return '';
     });
   };

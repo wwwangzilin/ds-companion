@@ -317,8 +317,12 @@ struct TurnReport {
     task_mode: bool,
     /// 刚刚发生变化（页面可以闪一下角标，让主人看见模式切了）
     task_changed: bool,
-    /// 【工作模式】块正文（task_mode 为真时带上；Rust 渲染，页面别自己拼）
+    /// 【工作模式】块正文（**两个态都给**：页面按最终判定决定用不用 —— 模型可能改判）
     task_text: String,
+    /// 这一轮任务判定的本地信号（页面请模型复核时拿它当提示词的参考）
+    task_signal: state::TaskSignal,
+    /// 本地判定贴着门槛、值得请模型再判一次（门控在 Rust 算，见 `want_task_judge`）
+    want_task_judge: bool,
     /// 通路自检的告警（空 = 没看出问题）。
     ///
     /// 【为什么要跟着每轮回来】"机制没坏、通路断了"这类问题（情绪冻结、饿着没人管）
@@ -376,6 +380,8 @@ fn dsc_turn_report(app: tauri::AppHandle, user_text: String, hour: u32) -> TurnR
             task_mode: false,
             task_changed: false,
             task_text: String::new(),
+            task_signal: state::TaskSignal::default(),
+            want_task_judge: false,
             vitals: Vec::new(),
         };
     }
@@ -390,7 +396,11 @@ fn dsc_turn_report(app: tauri::AppHandle, user_text: String, hour: u32) -> TurnR
     // ① 角色：情绪 → 心理状态；② 身体：先补时间流逝，再按这轮的反应推进
     let mut st = state::load_state(&character);
     let body_note = state::apply_body_elapsed(&mut st.body, now, hour);
-    let sig = state::sense_text(&user_text);
+    // 名字从这里进来：叫当前角色的名字也算亲密（原来「露娜」是硬编码在 state.rs 词表里的）
+    let sig = state::sense_text_with(
+        &user_text,
+        &personas::call_names(cfg.active_persona.as_deref()),
+    );
     // 亲昵判断由 sense_text 一起给出 —— 这里原来**硬编码了第二份词表**，
     // 两份必然走散（state.rs 那边加了"在吗""露娜"这类呼唤，这边根本不认）
     let intimate = sig.intimate;
@@ -491,12 +501,12 @@ fn dsc_turn_report(app: tauri::AppHandle, user_text: String, hour: u32) -> TurnR
         anchor_every_turns: cfg.anchor_every_turns,
         task_mode,
         task_changed,
-        // 只有真在工作时才给块：日常态给一段"你在工作"会让她莫名其妙地端着
-        task_text: if task_mode {
-            state::render_task_block()
-        } else {
-            String::new()
-        },
+        // 【为什么两个态都渲染】页面在贴门槛时会请模型再判一次（`want_task_judge`），
+        // 判成"工作"时手里得有正文 —— 所以正文一律给，用不用由页面的 taskMode 决定
+        // （见 inject.js 里 addBlock('工作模式', ...) 那行）。
+        task_text: state::render_task_block(),
+        task_signal: task_sig.clone(),
+        want_task_judge: state::want_task_judge(task_sig.score),
         vitals,
     }
 }
@@ -817,13 +827,37 @@ fn config_set(app: tauri::AppHandle, cfg: config::AppConfig) -> Result<(), Strin
     Ok(())
 }
 
-/// 把最新配置推给正在跑的页面（改完立刻生效，不用刷新）
+/// 上一次推给页面的配置（序列化后的串）。
+static LAST_PUSHED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// 把最新配置推给正在跑的页面（改完立刻生效，不用刷新）。
+///
+/// 【为什么要去重】每次配置 / 记忆 / 状态一有风吹草动都会调它，而 payload 里带着
+/// **整库可见记忆** —— 记忆上百条时，每次变更都全量 JSON 化 + eval 一遍是纯浪费
+/// （页面还要再解析一次、再从里面挑一遍）。这里按序列化结果去重：内容一模一样就
+/// 一个字节都不发。权重/新鲜度会随时间漂，所以比的是整串、不是某个版本号 ——
+/// 真正的"没变"才跳过。
+///
+/// 【页面重新加载会不会漏】不会：页面启动时会自己调 `dsc_get_config` 主动拉一次，
+/// push 只是"改完立刻生效"的快路径。
 fn push_config(app: &tauri::AppHandle) {
     let payload = config::inject_payload();
-    let js = format!(
-        "window.__DSC_SET_CONFIG__ && window.__DSC_SET_CONFIG__({});",
-        serde_json::to_string(&payload).unwrap_or_else(|_| "null".into())
-    );
+    let json = match serde_json::to_string(&payload) {
+        Ok(j) => j,
+        Err(_) => "null".into(),
+    };
+    {
+        let mut last = match LAST_PUSHED.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if *last == json {
+            return; // 一模一样：不打扰页面
+        }
+        last.clear();
+        last.push_str(&json);
+    }
+    let js = format!("window.__DSC_SET_CONFIG__ && window.__DSC_SET_CONFIG__({json});");
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.eval(&js);
     }
@@ -1681,6 +1715,25 @@ fn tray_toggle_pause(app: &tauri::AppHandle) {
     refresh_tray(app);
 }
 
+/// 托盘上点「静音（什么都不注入）」。
+///
+/// 【与 `tray_toggle_pause` 的区别】那个只改 `cadence`（人设块）——状态 / 工具 / 回锚
+/// 照进不误；这个动的是**总开关**：页面侧整条注入路径直接跳过，连轮数都不推进。
+/// 勾选态同样从配置推出来（读 `inject_enabled`），不问"上次是什么"。
+fn tray_toggle_mute(app: &tauri::AppHandle) {
+    let mut cfg = config::load();
+    cfg.inject_enabled = !cfg.inject_enabled;
+    if let Err(e) = config::save(&cfg) {
+        shell_log(&format!("[tray] 保存静音状态失败：{e}"));
+    }
+    shell_log(&format!(
+        "[tray] 注入总开关 -> {}",
+        if cfg.inject_enabled { "开" } else { "静音" }
+    ));
+    push_config(app);
+    refresh_tray(app);
+}
+
 /// 托盘上换角色（子菜单里点某个名字）
 fn switch_persona(app: &tauri::AppHandle, id: &str) {
     let mut cfg = config::load();
@@ -1732,6 +1785,16 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         cfg.cadence == "off",
         None::<&str>,
     )?;
+    // 【总开关】与上面那个的区别要说清：`pause` 只管**人设块**（状态 / 工具 / 回锚照进不误），
+    // 这个才是唯一的"一个字节都不注入"——想把它当普通浏览器用就勾它。
+    let mute = CheckMenuItem::with_id(
+        app,
+        "mute",
+        "静音（什么都不注入）",
+        true,
+        !cfg.inject_enabled,
+        None::<&str>,
+    )?;
 
     // "切换角色"子菜单：启动时建一次。人设列表不长变（新导入的下次启动出现）——
     // 动态重建子菜单会把正开着的菜单掀掉，不值得。
@@ -1766,7 +1829,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
 
     let mut refs: Vec<&dyn IsMenuItem<tauri::Wry>> =
-        vec![&line1, &line2, &sep1, &today, &feed, &pause, &sep2];
+        vec![&line1, &line2, &sep1, &today, &feed, &pause, &mute, &sep2];
     if let Some(s) = sub.as_ref() {
         refs.push(s);
         refs.push(&sep3);
@@ -1806,6 +1869,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     });
                 }
                 "pause" => tray_toggle_pause(app),
+                "mute" => tray_toggle_mute(app),
                 "settings" => {
                     let h = app.clone();
                     tauri::async_runtime::spawn(async move {

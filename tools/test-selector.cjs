@@ -83,6 +83,40 @@ const mem = (over) =>
   check('角色记忆排在前（同分时优先）', r.usedIds[0] === 'c', JSON.stringify(r.usedIds));
 }
 
+// 8) 触发词是词组、用户说的是其中一个词 —— 这是"记了却捞不出来"的头号成因
+//
+// 【旧行为】只认精确相等（`promptSet.has(k)`），而部分匹配那条路写着 `pw.length > 2` ——
+// 中文里最常用的触发词恰恰是两个字的词，于是两边都匹配不上，低重要度的记忆永远落选。
+{
+  const phrase = mem({ id: 'phrase', name: '项目进度', content: '在写 ds-companion', keys: ['项目进度'], importance: 2 });
+  const r = selectMemories('项目现在怎么样了', [phrase], { budget: 500, now: NOW });
+  check('词组触发词遇上一个词也命中', r.usedIds.includes('phrase'), JSON.stringify(r.usedIds));
+
+  const short = mem({ id: 'short', name: '部署', content: '用 CI 发版', keys: ['部署流程'], importance: 2 });
+  const r2 = selectMemories('部署完了吗', [short], { budget: 500, now: NOW });
+  check('两字词的部分匹配也算', r2.usedIds.includes('short'), JSON.stringify(r2.usedIds));
+}
+
+// 9) weight 参与"够不够格参与"的门槛（Rust 侧 weight_of 的结果随记忆一起下发）
+//
+// 【为什么把 weight 拉进来】原来没命中触发词时只有 `importance >= 4` 一条后路，
+// 可重要度是**存的时候**打的，而 weight 是 importance × 新鲜度 + 访问回血 ——
+// 一条被反复用到的重要度 3 记忆本来完全够格，却被挡在门外。
+{
+  const warm = mem({ id: 'warm', name: '她常提起的事', content: '被反复用到', keys: ['zzz'], importance: 3, weight: 4.2 });
+  const cold = mem({ id: 'cold', name: '很久没碰', content: '重要度一样低', keys: ['zzz'], importance: 3, weight: 0.4 });
+  const r = selectMemories('随便说点什么', [warm, cold], { budget: 500, now: NOW });
+  check('weight 高的没命中也能参与', r.usedIds.includes('warm'), JSON.stringify(r.usedIds));
+  check('weight 低的仍不参与（门槛没放太松）', !r.usedIds.includes('cold'), JSON.stringify(r.usedIds));
+}
+
+// 10) 放宽的边界：单字触发词不算命中（否则"一"能命中一切）
+{
+  const m = mem({ id: 'one', name: 'x', content: 'y', keys: ['了'], importance: 2 });
+  const r = selectMemories('好了', [m], { budget: 500, now: NOW });
+  check('单字触发词不算命中', !r.usedIds.includes('one'), JSON.stringify(r.usedIds));
+}
+
 // 7) token 估算量级
 {
   check('中文估算约 0.6/字', Math.abs(estimateTokens('一二三四五六七八九十') - 6) <= 1, String(estimateTokens('一二三四五六七八九十')));

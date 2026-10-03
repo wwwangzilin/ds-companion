@@ -79,7 +79,8 @@
       if (tagLower.length > 1 && promptSet.has(tagLower)) tagHits++;
       for (var j = 0; j < promptWords.length; j++) {
         var pw = promptWords[j];
-        if (pw.length > 2 && tagLower.indexOf(pw) >= 0 && tagLower !== pw) tagHits += 0.5;
+        // 两字词也算部分命中（原来 `> 2` 把"项目""文档"这类全漏了）
+        if (pw.length >= 2 && tagLower.indexOf(pw) >= 0 && tagLower !== pw) tagHits += 0.5;
       }
     }
     var nameHits = 0;
@@ -101,12 +102,26 @@
     return Math.min(m.accessCount || 0, 20) + freshness;
   }
 
-  /** 触发词是否在这次的输入里出现 */
+  /** 触发词是否在这次的输入里出现。
+   *
+   * 【为什么不能只比"精确相等"】原来只认 `promptSet.has(k)` —— 可触发词常常是**词组**
+   * （"项目进度"），而用户那句话被 Intl.Segmenter 切成的是**词**（"项目""进度"），
+   * 两边永不相等。叠加下面"触发词没命中且 importance < 4 就不参与"的规则，
+   * 表现就是**记了却永远捞不出来**。中文里最常用的触发词恰恰是两个字，所以这里改成
+   * **双向包含**，并且两字词也认（原来 `pw.length > 2` 把两字词全挡在门外）。
+   */
   function keysHit(promptWords, m) {
     var promptSet = new Set(promptWords);
-    for (var i = 0; i < (m.keys || []).length; i++) {
-      var k = String(m.keys[i]).toLowerCase();
-      if (k.length > 1 && promptSet.has(k)) return true;
+    var keys = m.keys || [];
+    for (var i = 0; i < keys.length; i++) {
+      var k = String(keys[i]).toLowerCase().trim();
+      if (k.length < 2) continue;
+      if (promptSet.has(k)) return true;
+      for (var j = 0; j < promptWords.length; j++) {
+        var pw = promptWords[j];
+        if (pw.length < 2) continue;
+        if (k.indexOf(pw) >= 0 || pw.indexOf(k) >= 0) return true;
+      }
     }
     return false;
   }
@@ -140,12 +155,19 @@
       // 这一轮之前已经注入过的（还在上下文里）就别重复烧额度了
       if (skip.has(m.id)) continue;
       var hit = keysHit(promptWords, m);
-      // 世界书式条件注入：触发词没命中、又不是"重要/钉住"的，直接不参与
-      if (!hit && !m.pinned && (m.importance || 3) < 4) continue;
+      var weight = Number(m.weight) || 0;
+      // 世界书式条件注入：触发词没命中、又不"重要/钉住/权重高"的，直接不参与。
+      //
+      // 【为什么把 weight 也拉进这道门】原来只有 `importance >= 4` 一条后路，
+      // 可重要度是**存的时候**打的，而 weight = importance × 新鲜度 + 访问回血
+      // （Rust 的 `weight_of`）：一条被反复用到、或者权重刚涨上来的重要度 3 的记忆
+      // 本来完全够格，却被这道门挡在外面。阈值 3 ≈"重要度 3 且还新鲜"，正是该浮上来的那档。
+      if (!hit && !m.pinned && (m.importance || 3) < 4 && weight < 3) continue;
       var score =
         (m.pinned ? 1000 : 0) +
         (m.characterId ? 40 : 0) +
         (m.importance || 3) * 30 +
+        weight * 8 +
         keywordScore(promptWords, m) +
         decayScore(m, now) +
         (now - (m.lastAccessedAt || 0) < 3600000 ? 5 : 0);

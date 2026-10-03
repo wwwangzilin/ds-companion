@@ -477,8 +477,24 @@
       }
       return;
     }
-    // 片段创建/追加：内容随后会以 response/fragments/<i>/content 的形式来，这里不做事
+    // 片段创建/追加：**声明片段的存在与类型**（内容随后才来）。
+    //
+    // 【这里必须记类型，不能直接 return】`currentIndex()` 是靠 types 找"当前片段"的，
+    // 而裸增量帧（`{"v":"你"}`，没有 p 字段）只能靠它定位 —— types 空时它返回 -1，
+    // 紧接着的 `if (idx < 0) return` 会把整段正文**静默丢掉**：主人看到空回复，
+    // 而日志里一个错都没有（这正是 `empty-reply.js` 那类问题的成因之一）。
+    // 旧的 `return` 就是这个 bug 的来源。
     if (f.p === 'response/fragments' && f.o === 'APPEND' && Array.isArray(f.v)) {
+      var base = nextFreeIndex(types);
+      for (var a = 0; a < f.v.length; a++) {
+        var frag = f.v[a] || {};
+        var at = base + a;
+        types[at] = frag.type || types[at] || 'RESPONSE';
+        // 有的 APPEND 帧会把内容一起给（空串只算声明，不算内容）
+        if (typeof frag.content === 'string' && frag.content) {
+          parts[at] = (parts[at] || '') + frag.content;
+        }
+      }
       return;
     }
     if (typeof f.v !== 'string') return;
@@ -502,7 +518,10 @@
     } else {
       idx = currentIndex(types);
     }
-    if (idx === null || idx < 0) return;
+    // 【idx < 0 时兜底到片段 0，不能直接丢】types 为空只可能是"声明帧"没被认出来
+    // （这一段只给了裸增量、没给快照）；而裸增量帧没有 p 字段，没有别的办法定位。
+    // 丢掉的代价是**整段回复消失**，那比"偶尔写进一个不存在的片段 0"严重得多。
+    if (idx === null || idx < 0) idx = 0;
     // 【别自作聪明】曾经在这里写过"当前片段是 THINK 就声明一个新的 RESPONSE 接住正文" ——
     // 那是个方向性错误：实测有些轮次**整轮只有 THINK 片段**（模型只在思考里说话，
     // 而页面照样显示），硬造一个 RESPONSE 会把思考当正文、还会把真正的回答搅乱。
@@ -682,6 +701,32 @@
     return u && typeof u[name] === 'function' ? u[name] : fallback;
   }
 
+  /** `ask` 两次都失败时的上报（第一次换会话重试也挂了 = 隐藏链整条不可用）。
+   *
+   * 【为什么必须留证】记忆整理 / 情绪感知 / 自我修订 / 主动开口全走这条链。
+   * 它整条挂掉时，主人看到的只是"她最近怎么不自己开口了"——那是猜不出来的；
+   * 而 catch 里原来只 log，设置页的体检块（health.lastError）永远是空的。
+   */
+  function reportAskFailure(kind, first, second) {
+    try {
+      var msg = String((second && second.message) || second);
+      var firstMsg = String((first && first.message) || first);
+      var doc = root.document || {};
+      var online = root.navigator ? root.navigator.onLine : '?';
+      var h = root.__DSC_HEALTH__;
+      log('ASK[' + kind + '] 两次都失败：' + msg);
+      if (!h) return;
+      h.lastError =
+        'ASK[' + kind + '] 两次都失败：' + msg +
+        '（首次：' + firstMsg + ' hidden=' + !!doc.hidden + ' online=' + online + '）';
+      if (typeof root.__DSC_PUBLISH_HEALTH__ === 'function') {
+        root.__DSC_PUBLISH_HEALTH__('ask-failed');
+      }
+    } catch (e) {
+      /* 上报本身绝不能影响主流程 */
+    }
+  }
+
   async function ask(kind, prompt, opts) {
     var o = opts || {};
     var k = kindOf(kind);
@@ -740,11 +785,16 @@
       parent = 0;
       turns = 0;
       rotated = true;
-      r = await seam('completion', completion)({
-        sessionId: sid,
-        parentMessageId: null,
-        prompt: prompt,
-      });
+      try {
+        r = await seam('completion', completion)({
+          sessionId: sid,
+          parentMessageId: null,
+          prompt: prompt,
+        });
+      } catch (e2) {
+        reportAskFailure(k, e, e2);
+        throw e2;
+      }
     }
 
     var newId = Number(r.responseMessageId) || 0;
