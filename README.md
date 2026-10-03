@@ -640,3 +640,19 @@ dist/            设置界面（原生 HTML/CSS/JS）
 .verify/         验收与探针脚本 + _env.mjs（隔离门禁）
 verify-run.ps1   隔离数据 + 可调试地启动
 ```
+
+---
+
+## 8. 第三方组件
+
+| 组件 | 位置 | 来源 | 许可 |
+|---|---|---|---|
+| PoW 求解 wasm | `src-tauri/inject/sha3_wasm_bg.wasm` | npm `@rezaparsian/deepseek-pow-solver` v1.0.1（源码 [RezaParsian/DeepseekPowsolver](https://github.com/RezaParsian/DeepseekPowsolver)，包内原名 `sha3_wasm_bg.7b9ca65ddd.wasm`） | **MIT** |
+
+- 它干的是解 DeepSeek 的 PoW 挑战（导出 `wasm_solve` / `wasm_deepseek_hash_v1`）。
+  `src-tauri/src/lib.rs` 用 `include_bytes!` 把它 **base64 内联进注入脚本**，
+  所以注入脚本是自包含的、不会去请求外部文件。
+- 来源核对过：本仓库里的文件与那个 npm 包 1.0.1 内的 wasm **sha256 完全一致**
+  （`b3fca8cc072c1defbd60c02266a8e48bd307a1804aaff4314900aea720e72f7d`）。
+  包是 MIT，本仓库同样是 MIT，署名留在这一节。
+- 其余依赖见 `src-tauri/Cargo.toml` / `Cargo.lock`，都是 crates.io 上的常规 crate，各自沿用原许可。
