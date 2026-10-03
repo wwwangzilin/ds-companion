@@ -112,12 +112,24 @@ if (first) {
   console.log('✗ ① 没找到「首次注入」—— 注入没生效，或者页面根本没加载');
 }
 
-if (skipped) {
-  ok(`② 幂等守卫生效（${body(skipped)}）`);
+// ② 的判据在消掉双注入之后变了：
+//   以前 wry 会注入两遍，我们靠 window.__DSC_INJECTED__ 守卫挡住第二遍，
+//   于是判据是"看得到「重复注入已跳过」"。
+//   现在 tools/patch-android-provider.mjs 把第二遍注入从根上去掉了 ——
+//   「跳过」这条**本来就不该出现**。真正该盯的是**有没有 Cannot redefine property**：
+//   那是 Tauri 自己的 IPC 引导脚本被重复定义、进而打断页面所有 IPC 调用的信号
+//   （真机表现："有些地方点不了"）。
+const redefine = lines.filter((l) => l.includes('Cannot redefine property'));
+if (redefine.length === 0) {
+  ok('② 没有双注入（Tauri 框架脚本没被重复定义）');
+  if (skipped) {
+    console.log(`   （顺带看到幂等守卫在工作：${body(skipped)}）`);
+  }
 } else {
   allPass = false;
-  console.log('✗ ② 没找到「重复注入已跳过」');
-  console.log('   注：只在 Android 上该出现（桌面端只注入一次）；没有它意味着钩子可能叠了两层');
+  console.log(`✗ ② 出现 ${redefine.length} 条 Cannot redefine property —— 双注入还在`);
+  console.log('   多半是 gen/android 里的 RustWebViewClient.kt 被重新生成覆盖了，跑一下：');
+  console.log('     node tools/patch-android-provider.mjs');
 }
 
 console.log('\n--- 页面加载（用来判断"到底加载成功没有"）---');
