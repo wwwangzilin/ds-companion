@@ -86,6 +86,9 @@ pub struct AppConfig {
     /// 页面右下角状态 HUD
     #[serde(default = "default_true")]
     pub hud_enabled: bool,
+    /// 页面左下角的角色立绘（内置 DeepSeek 娘；自建角色可在设置里传自己的图）
+    #[serde(default = "default_true")]
+    pub avatar_enabled: bool,
     /// 虚拟身体层（困倦/体力/饿/心跳）注入进【状态】块
     #[serde(default = "default_true")]
     pub body_enabled: bool,
@@ -243,6 +246,7 @@ impl Default for AppConfig {
             boundaries_avoid: String::new(),
             ooc_token: String::new(),
             hud_enabled: true,
+            avatar_enabled: true,
             body_enabled: true,
             user_state_enabled: true,
             self_review_mode: default_review_mode(),
@@ -323,6 +327,8 @@ pub struct InjectPayload {
     /// 回锚间隔：页面按会话轮数自己数（0 = 不回锚）
     pub anchor_every_turns: u32,
     pub hud_enabled: bool,
+    /// 页面左下角立绘的总开关（关 = 页面连素材都不去取）
+    pub avatar_enabled: bool,
     pub sense_mode: String,
     pub sense_every_turns: u32,
     pub sense_daily_cap: u32,
@@ -431,6 +437,7 @@ pub fn inject_payload() -> InjectPayload {
         anchor_text: anchor_text.clone(),
         anchor_every_turns: cfg.anchor_every_turns,
         hud_enabled: cfg.hud_enabled,
+        avatar_enabled: cfg.avatar_enabled,
         sense_mode: cfg.sense_mode.clone(),
         sense_every_turns: cfg.sense_every_turns,
         sense_daily_cap: cfg.sense_daily_cap,
@@ -528,6 +535,7 @@ mod tests {
         assert!(d.ooc_token.is_empty(), "默认不认任何暗号 —— 没配就别自作主张");
         assert!(d.sense_daily_cap > 0, "模型感知要有当日闸");
         assert!(d.hud_enabled);
+        assert!(d.avatar_enabled);
     }
 
     /// 端到端：一份坏 config.json 必须被隔离成 `.bad-*`，而不是被下一次保存悄悄覆盖。

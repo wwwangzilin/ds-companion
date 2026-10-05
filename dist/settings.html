@@ -236,6 +236,11 @@
                   <span class="track"><span class="knob"></span></span>
                   <span class="switch-label">显示 HUD</span>
                 </label>
+                <label class="switch" title="聊天窗口左下角显示角色立绘">
+                  <input type="checkbox" id="st-avatar" />
+                  <span class="track"><span class="knob"></span></span>
+                  <span class="switch-label">显示立绘</span>
+                </label>
                 <label class="switch" title="把虚拟身体层（困倦/体力/心跳/身体语言）一起注进【状态】块">
                   <input type="checkbox" id="st-body" />
                   <span class="track"><span class="knob"></span></span>
@@ -462,6 +467,27 @@
                 <span>回锚锚点<em>一行一条；防漂移就靠它们（称呼、雷区、固定设定）</em></span>
                 <textarea id="sf-anchors" rows="5" placeholder="叫主人「主人」&#10;被夸会嘴硬但尾巴在摇"></textarea>
               </label>
+
+              <span id="sec-avatar"></span>
+              <div class="group-head">
+                <span>角色立绘</span>
+                <em>聊天窗口左下角那张；内置角色自带 DeepSeek 娘，自建角色可以传自己的图</em>
+              </div>
+              <div class="avatar-card">
+                <div class="avatar-preview">
+                  <img id="av-img" alt="" />
+                  <span class="avatar-empty" id="av-empty">还没有立绘</span>
+                </div>
+                <div class="avatar-side">
+                  <div class="avatar-meta" id="av-meta">—</div>
+                  <div class="avatar-actions">
+                    <button class="btn ghost small" id="av-pick">选一张 PNG…</button>
+                    <button class="btn ghost small" id="av-clear">清除</button>
+                  </div>
+                  <p class="hint" id="av-hint">—</p>
+                </div>
+              </div>
+              <input type="file" id="av-file" accept="image/png,.png" style="display:none" />
 
               <span id="sec-addendum"></span>
               <div class="group-head">

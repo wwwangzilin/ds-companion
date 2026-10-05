@@ -35,6 +35,7 @@
     "allow-dsc-tool-wrap",
     "allow-tool-pending-list",
     "allow-dsc-tool-proposal-decide",
-    "allow-dsc-diary-save"
+    "allow-dsc-diary-save",
+    "allow-dsc-avatar-get"
   ]
 }

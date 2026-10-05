@@ -1524,6 +1524,65 @@ function renderBoundary() {
   }
 }
 
+// ── 立绘（聊天窗口左下角） ─────────────────────────────────────────
+//
+// 一个角色一张图：内置角色走 exe 里编好的 DeepSeek 娘，自建角色传自己的 PNG。
+// 落盘、清洗、大小限制全在 Rust（avatar.rs），这儿只管预览与上传。
+let avView = null;
+
+/** 立绘跟着「编辑器里正在编辑的角色」走；没开编辑器就跟着激活角色。 */
+function avatarTargetId() {
+  if (stCurrent && stCurrent.characterId) return stCurrent.characterId;
+  const ap = cfg.activePersona;
+  return ap && ap !== 'off' ? ap : '';
+}
+
+async function renderAvatar() {
+  if (!$('av-img')) return;
+  try {
+    avView = await invoke('dsc_avatar_get', { id: avatarTargetId() || null });
+  } catch (e) {
+    $('av-hint').textContent = '读不出来：' + e;
+    return;
+  }
+  const v = avView || {};
+  if (v.dataUrl) {
+    $('av-img').src = v.dataUrl;
+    $('av-img').style.display = 'block';
+    $('av-empty').style.display = 'none';
+  } else {
+    $('av-img').removeAttribute('src');
+    $('av-img').style.display = 'none';
+    $('av-empty').style.display = 'flex';
+  }
+  const who = v.source === 'builtin' ? '内置 DeepSeek 娘' : v.source === 'user' ? '你传的图' : '没有';
+  $('av-meta').textContent = who + (v.width ? '　' + v.width + '×' + v.height : '');
+  $('av-clear').disabled = !v.hasUser;
+  $('av-hint').textContent = v.hasUser
+    ? '这张是你传的；清除之后就回落到内置素材'
+    : v.source === 'builtin'
+      ? '内置素材：来自 gal-view 默认预设的 DeepSeek 娘立绘（MIT）'
+      : '传一张 PNG（要透明背景）就会出现在聊天窗口左下角';
+}
+
+async function uploadAvatar(file) {
+  if (!file) return;
+  if (file.size > 8 * 1024 * 1024) return fail('图太大了，上限 8 MB');
+  try {
+    const dataUrl = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result || ''));
+      r.onerror = () => rej(r.error || new Error('读文件失败'));
+      r.readAsDataURL(file);
+    });
+    await invoke('dsc_avatar_set', { id: avatarTargetId(), data: dataUrl });
+    await renderAvatar();
+    toast('立绘换好了（聊天窗口刷新一下就生效）');
+  } catch (e) {
+    fail(e);
+  }
+}
+
 function renderStAll() {
   renderStList();
   renderStSummary();
@@ -1536,11 +1595,13 @@ function renderStAll() {
   $('st-review-note').textContent = '';
   $('st-enabled').checked = cfg.stateEnabled !== false;
   $('st-hud').checked = cfg.hudEnabled !== false;
+  $('st-avatar').checked = cfg.avatarEnabled !== false;
   $('st-body').checked = cfg.bodyEnabled !== false;
   $('st-user').checked = cfg.userStateEnabled !== false;
   $('sf-idle').value = cfg.proactiveIdleMinutes || 20;
   renderScene();
   renderBoundary();
+  renderAvatar();
   // 安静时段：空串 = 那一侧没配（跟 Rust 侧一个判据：两侧都配齐才生效）
   $('sf-quiet-from').value = cfg.proactiveQuietFrom === null || cfg.proactiveQuietFrom === undefined ? '' : cfg.proactiveQuietFrom;
   $('sf-quiet-to').value = cfg.proactiveQuietTo === null || cfg.proactiveQuietTo === undefined ? '' : cfg.proactiveQuietTo;
@@ -2111,6 +2172,27 @@ async function setGate(patch, msg) {
 }
 
 // ── 绑定 ─────────────────────────────────────────────────────────────────
+$('av-pick').addEventListener('click', () => $('av-file').click());
+$('av-file').addEventListener('change', (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = ''; // 同一个文件连选两次也要能触发
+  uploadAvatar(f);
+});
+$('av-clear').addEventListener('click', async () => {
+  try {
+    await invoke('dsc_avatar_clear', { id: avatarTargetId() });
+    await renderAvatar();
+    toast('立绘清掉了');
+  } catch (e) {
+    fail(e);
+  }
+});
+$('st-avatar').addEventListener('change', (e) =>
+  setGate(
+    { avatarEnabled: e.target.checked },
+    e.target.checked ? '立绘已显示' : '立绘已隐藏',
+  ),
+);
 $('btn-new').addEventListener('click', newPersona);
 $('btn-save').addEventListener('click', saveCurrent);
 $('btn-delete').addEventListener('click', deleteCurrent);

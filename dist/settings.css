@@ -1652,3 +1652,60 @@ textarea {
   line-height: 1.7;
   opacity: 0.9;
 }
+
+/* ── 角色立绘卡片 ────────────────────────────────────────────────
+   预览框固定 3:4：立绘基本都是竖图，固定框能保证换图时整张卡片不跳。 */
+.avatar-card {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.avatar-preview {
+  position: relative;
+  flex: 0 0 auto;
+  width: 104px;
+  height: 139px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.28));
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.avatar-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.avatar-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.avatar-side {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.avatar-meta {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.avatar-actions {
+  display: flex;
+  gap: 8px;
+}

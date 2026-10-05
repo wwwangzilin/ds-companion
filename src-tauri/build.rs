@@ -90,6 +90,10 @@ fn main() {
             // 设置页翻日记（只读两条）
             "dsc_diary_days",
             "dsc_diary_read",
+            // 立绘：页面只读当前角色的图；传图/清图只有设置窗口能做
+            "dsc_avatar_get",
+            "dsc_avatar_set",
+            "dsc_avatar_clear",
         ])),
     )
     .expect("failed to run tauri-build");

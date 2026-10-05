@@ -68,6 +68,9 @@
     "allow-tool-pending-list",
     "allow-dsc-tool-proposal-decide",
     "allow-dsc-diary-days",
-    "allow-dsc-diary-read"
+    "allow-dsc-diary-read",
+    "allow-dsc-avatar-get",
+    "allow-dsc-avatar-set",
+    "allow-dsc-avatar-clear"
   ]
 }

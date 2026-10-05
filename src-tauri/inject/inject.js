@@ -1461,6 +1461,125 @@
     }
   }
 
+  // ─────────────────────── 立绘（左下角） ───────────────────────
+  //
+  // 一个角色一张图：内置 DeepSeek 娘编在 exe 里（`assets/avatars/deepseek.png`），
+  // 自建角色在设置窗口传自己的图，落到 `<数据目录>/avatars/<角色id>.png`。
+  //
+  // 【为什么挑左下角】右下角已经被 badge(14px) / HUD(48px) / 气泡(104px) 占满了。
+  //
+  // 【为什么整层 pointer-events:none】立绘是装饰，绝不能挡住页面左下角本来能点的
+  // 东西 —— 整层不吃鼠标事件，主人该怎么点还怎么点。
+  var AVATAR = { id: null, url: '', ratio: 0.75 };
+
+  function avatarId() {
+    return (CFG && CFG.personaId) || '';
+  }
+
+  function mountAvatar() {
+    if (document.getElementById('dsc-avatar')) return;
+    try {
+      var box = document.createElement('div');
+      box.id = 'dsc-avatar';
+      box.style.cssText = [
+        'position:fixed',
+        'left:16px',
+        'bottom:0',
+        'z-index:2147483645',
+        'pointer-events:none',
+        'user-select:none',
+        'opacity:0',
+        'transform:translateY(14px)',
+        'transition:opacity .6s ease, transform .6s cubic-bezier(.2,.8,.3,1)',
+      ].join(';');
+      var img = document.createElement('img');
+      img.id = 'dsc-avatar-img';
+      img.alt = '';
+      img.draggable = false;
+      img.style.cssText = [
+        'display:block',
+        'height:min(46vh, 420px)',
+        'width:auto',
+        'max-width:42vw',
+        'object-fit:contain',
+        'object-position:bottom left',
+        'filter:drop-shadow(0 12px 32px rgba(40,20,80,.55))',
+      ].join(';');
+      img.addEventListener('load', function () {
+        if (img.naturalWidth && img.naturalHeight) {
+          AVATAR.ratio = img.naturalWidth / img.naturalHeight;
+        }
+      });
+      box.appendChild(img);
+      document.body.appendChild(box);
+      watchSay();
+      paintAvatar();
+    } catch (e) {
+      log('avatar-failed ' + e);
+    }
+  }
+
+  /** 她"说话"时立绘微微上浮 —— 学 gal-view 的「说话时加光晕」，但更轻。 */
+  function watchSay() {
+    var say = document.getElementById('dsc-say');
+    if (!say || !window.MutationObserver) return;
+    try {
+      new MutationObserver(function () {
+        var box = document.getElementById('dsc-avatar');
+        if (!box) return;
+        var on = say.style.display !== 'none' && say.style.opacity === '1';
+        if (box.style.opacity !== '1') return; // 本身就没显示，别去动它
+        box.style.transform = on ? 'translateY(-6px) scale(1.012)' : 'translateY(0) scale(1)';
+      }).observe(say, { attributes: true, attributeFilter: ['style'] });
+    } catch (e) {
+      /* 监听不上只是少了动效，不影响立绘本身 */
+    }
+  }
+
+  /** 拉一次素材。同一个角色只拉一次（1MB 上下，别每轮都过一遍 IPC）。 */
+  function loadAvatar(force) {
+    var id = avatarId();
+    if (!force && AVATAR.id === id && AVATAR.url) return;
+    AVATAR.id = id;
+    invoke('dsc_avatar_get', { id: id || null })
+      .then(function (v) {
+        AVATAR.url = (v && v.dataUrl) || '';
+        if (v && v.width && v.height) AVATAR.ratio = v.width / v.height;
+        var img = document.getElementById('dsc-avatar-img');
+        if (img && AVATAR.url) img.src = AVATAR.url;
+        log(
+          'avatar ' + ((v && v.source) || 'none') +
+            ' id=' + ((v && v.id) || '-') +
+            ' ' + ((v && v.width) || 0) + 'x' + ((v && v.height) || 0),
+        );
+        paintAvatar();
+      })
+      .catch(function (e) {
+        log('avatar-get-failed ' + e);
+        AVATAR.url = '';
+        paintAvatar();
+      });
+  }
+
+  /** 按「开关 + 当前角色 + 素材到手没有」决定显不显示。 */
+  function paintAvatar() {
+    var box = document.getElementById('dsc-avatar');
+    if (!box) return;
+    if (!(CFG && CFG.avatarEnabled !== false)) {
+      box.style.opacity = '0';
+      box.style.transform = 'translateY(14px)';
+      return;
+    }
+    // 换了角色就重取（设置里改完人设会重新推配置）
+    if (AVATAR.id !== avatarId()) {
+      loadAvatar(false);
+      return;
+    }
+    if (!AVATAR.url) return; // 还没拉到，保持藏着，别闪一个空框
+    box.style.opacity = '1';
+    box.style.transform = 'translateY(0) scale(1)';
+  }
+
   // ─────────────────────── 配置更新 ───────────────────────
   window.__DSC_SET_CONFIG__ = function (next) {
     CFG = next || { cadence: 'off', personaText: '' };
@@ -1470,6 +1589,7 @@
     CFG.taskText = '';
     paintBadge();
     paintHud();
+    paintAvatar();
     log('config-updated cadence=' + CFG.cadence + ' persona=' + (CFG.personaName || 'none'));
   };
 
@@ -1521,6 +1641,24 @@
     reportTurn(userText);
     return true;
   };
+  // 验收/排查用：强制重取立绘（设置窗口刚传完图时也走这条）
+  window.__DSC_RELOAD_AVATAR__ = function () {
+    loadAvatar(true);
+    return true;
+  };
+  /** 立绘现状（验收脚本断言用；不依赖 DOM 也能拿到） */
+  window.__DSC_AVATAR__ = function () {
+    var box = document.getElementById('dsc-avatar');
+    var img = document.getElementById('dsc-avatar-img');
+    return {
+      id: AVATAR.id,
+      source: AVATAR.url ? 'loaded' : 'none',
+      urlLen: AVATAR.url.length,
+      opacity: box ? box.style.opacity : null,
+      natW: img ? img.naturalWidth : 0,
+      natH: img ? img.naturalHeight : 0,
+    };
+  };
 
   log(
     'init cadence=' +
@@ -1539,6 +1677,7 @@
     mountBadge();
     mountHud();
     mountSay();
+    mountAvatar();
     if (mounted) return;
     mounted = true;
     // 空闲判定：任何交互都算"主人在"

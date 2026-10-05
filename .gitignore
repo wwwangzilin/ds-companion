@@ -20,6 +20,11 @@ preview/
 # 一次性的批量替换清单（跑完就没用，且里面是本次改动的原文）
 .verify/edits-*.json
 
+# gal-view 素材的提取现场：只是拿来比对画风用的。真正进仓库的只有
+# src-tauri/assets/avatars/deepseek.png 那一张（来源与许可见 README 第三方组件）
+.verify/gal-assets/
+.verify/commit-msg-*.txt
+
 # 只用于「把人设同步进本机 DSH preset」：写死了 %APPDATA%/%USERPROFILE% 的目录布局，
 # 对别人没有意义（apply-edits.mjs 是通用工具，那个要进仓库）
 .verify/dsc-sync-persona.mjs

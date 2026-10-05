@@ -21,6 +21,7 @@
 //! 桌面端的 main.rs 现在只剩一句 `ds_companion_lib::run()`。
 //! `windows_subsystem = "windows"` 是 bin 才认的属性，所以它跟着 main.rs 走。
 
+mod avatar;
 mod chat;
 mod config;
 // pub：给集成测试用（tests/diary_fs.rs 要靠它验证**真实落盘** ——
@@ -1564,6 +1565,77 @@ fn data_dir() -> DataDirInfo {
     data_dir_info()
 }
 
+// ─────────────────────── 立绘素材 ───────────────────────
+//
+// 页面侧只读（dsc_avatar_get）；传图/清图只给本地设置窗口 —— 远程页面不该有往
+// 用户磁盘写文件的能力（和记忆删除只给设置窗口是同一条线）。
+
+/// 一张立绘的对外形状：页面拿 `dataUrl` 直接塞 `<img>`。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AvatarView {
+    id: String,
+    /// builtin | user | none
+    source: String,
+    /// 页面 `<img src>` 直接吃；source = none 时是空串
+    data_url: String,
+    width: u32,
+    height: u32,
+    /// 有没有用户自己传的图（设置窗口据此决定「清除」是否可点）
+    has_user: bool,
+}
+
+fn avatar_view(id: &str) -> AvatarView {
+    let has_user = avatar::has_user(id);
+    match avatar::read(id) {
+        Some((bytes, source)) => {
+            let (width, height) = avatar::png_size(&bytes);
+            AvatarView {
+                id: avatar::sanitize(id),
+                source: source.to_string(),
+                data_url: avatar::to_data_url(&bytes),
+                // 量不出尺寸时给个 3:4 兜底，页面不至于退回一个 0 高的框
+                width: if width == 0 { 768 } else { width },
+                height: if height == 0 { 1024 } else { height },
+                has_user,
+            }
+        }
+        None => AvatarView {
+            id: avatar::sanitize(id),
+            source: "none".to_string(),
+            data_url: String::new(),
+            width: 0,
+            height: 0,
+            has_user: false,
+        },
+    }
+}
+
+/// 取某个角色的立绘（**页面**用）。id 缺省/空 = 内置角色。
+#[tauri::command]
+fn dsc_avatar_get(id: Option<String>) -> AvatarView {
+    let id = id.unwrap_or_default();
+    if id.trim().is_empty() {
+        return avatar_view(avatar::BUILTIN_ID);
+    }
+    avatar_view(&id)
+}
+
+/// 给某个角色传一张立绘（**设置窗口**用）。`data` 可以是 dataURL，也可以是裸 base64。
+#[tauri::command]
+fn dsc_avatar_set(id: String, data: String) -> Result<AvatarView, String> {
+    let bytes = avatar::base64_decode(avatar::strip_data_url(&data))?;
+    avatar::save(&id, &bytes)?;
+    Ok(avatar_view(&id))
+}
+
+/// 清掉用户传的图：内置角色回落到内置素材，自建角色变回「没有立绘」。
+#[tauri::command]
+fn dsc_avatar_clear(id: String) -> Result<AvatarView, String> {
+    avatar::clear(&id)?;
+    Ok(avatar_view(&id))
+}
+
 /// 打开数据目录：点一下就能看到自己的记忆/人设/状态文件在哪
 #[tauri::command]
 fn data_reveal() -> Result<(), String> {
@@ -2246,6 +2318,9 @@ pub fn run() {
             log_reveal,
             data_dir,
             data_reveal,
+            dsc_avatar_get,
+            dsc_avatar_set,
+            dsc_avatar_clear,
             trash_prune,
             autostart_get,
             autostart_set,

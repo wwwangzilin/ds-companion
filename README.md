@@ -112,6 +112,28 @@ cargo build            # 首次约 3-5 分钟
 验收：`.verify/verify-persona-default.mjs`（11 项：三态各自的注入内容 / 正文里带着"觉醒坍缩"的来历 /
 不存在的 id 会退回默认 / 原版时 `stateEnabled=false`）。
 
+### 立绘（聊天页左下角那张）
+
+一个角色一张图，挂在聊天页面**左下角**（右下角已经被角标 / HUD / 气泡占满了）：
+
+- **内置角色自带**：DeepSeek 娘那张（1024×1536 透明 PNG），`include_bytes!` 编进 exe ——
+  数据目录清空、换台机器也照样有，跟「默认角色住在代码里」是同一条理由。
+- **自建角色传自己的**：设置 → 状态页 → 角色编辑器里的「角色立绘」卡片选一张 PNG，落到
+  `<数据目录>/avatars/<角色id>.png`。清除就回落到内置（内置角色）或「没有立绘」（自建角色）。
+- **只要 PNG**：立绘要透明底，所以按**魔数**判而不是按后缀 —— 传 jpg 会被明确拒绝，
+  而不是存下来变成一张破图。单张上限 8 MB。
+- **整层 `pointer-events:none`**：立绘是装饰，绝不能挡住页面左下角本来能点的东西。
+- 总开关在设置里（「显示立绘」）；关掉之后页面连素材都不去取（1MB 上下的 IPC 省掉）。
+
+落在三处：`src-tauri/src/avatar.rs`（读 / 落盘 / 洗 id / 量 PNG 尺寸 / 手写 base64）、
+`inject.js` 的 `mountAvatar`、设置页的「角色立绘」卡片。
+
+> 角色 id 会变成磁盘路径的一段，所以过了一道 `sanitize`（只留字母数字 `-` `_`，防路径穿越）。
+> 它**故意不折叠**中间连续的分隔符 —— 折叠会把 `dsh--luna` 撞成 `dsh-luna`，两个角色的图就串了。
+
+验收：`.verify/verify-avatar.mjs`（29 项：素材真的解码出来而不是"有个 img 标签"、贴左下角、
+不吃鼠标事件、上传落盘 / 非 PNG 被拒 / 清除回落 / 按角色隔离 / 设置卡片 / 开关链路双向）。
+
 ### 工具层（让她能动手）
 
 网页版**没有 function calling**（`/api/v0/chat/completion` 只回文本），所以工具走
@@ -772,6 +794,7 @@ verify-run.ps1   隔离数据 + 可调试地启动
 | 组件 | 位置 | 来源 | 许可 |
 |---|---|---|---|
 | PoW 求解 wasm | `src-tauri/inject/sha3_wasm_bg.wasm` | npm `@rezaparsian/deepseek-pow-solver` v1.0.1（源码 [RezaParsian/DeepseekPowsolver](https://github.com/RezaParsian/DeepseekPowsolver)，包内原名 `sha3_wasm_bg.7b9ca65ddd.wasm`） | **MIT** |
+| DeepSeek 娘立绘 | `src-tauri/assets/avatars/deepseek.png` | [Ayase34/gal-view](https://github.com/Ayase34/gal-view) 默认预设 `gal-scene.json` 里内嵌的 `DeepSeek娘_立绘.png`（1024×1536） | **MIT**（Copyright (c) 2026 Yunicon） |
 
 - 它干的是解 DeepSeek 的 PoW 挑战（导出 `wasm_solve` / `wasm_deepseek_hash_v1`）。
   `src-tauri/src/lib.rs` 用 `include_bytes!` 把它 **base64 内联进注入脚本**，
@@ -779,4 +802,7 @@ verify-run.ps1   隔离数据 + 可调试地启动
 - 来源核对过：本仓库里的文件与那个 npm 包 1.0.1 内的 wasm **sha256 完全一致**
   （`b3fca8cc072c1defbd60c02266a8e48bd307a1804aaff4314900aea720e72f7d`）。
   包是 MIT，本仓库同样是 MIT，署名留在这一节。
+- DeepSeek 娘立绘来自 DSH 的 GAL 视窗插件 **gal-view** 的默认预设场景（原作者 Yunicon，仓库 MIT）。
+  那张图本来就是该仓库随包分发的默认素材，本仓库按同样方式内联进 exe、署名留在这一节。
+  **同预设里的另外两张（卧室背景 / 对话框贴图）没有采用** —— 进本仓库的只有立绘这一张。
 - 其余依赖见 `src-tauri/Cargo.toml` / `Cargo.lock`，都是 crates.io 上的常规 crate，各自沿用原许可。
