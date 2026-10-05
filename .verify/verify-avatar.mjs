@@ -342,6 +342,78 @@ check('★ 设置里关掉开关 → 页面立绘真的收起来了（配置推�
 await flip(true);
 check('★ 再打开 → 立绘回来了', await waitOpacity('1'));
 
+// ── 动效：待机呼吸 + 状态驱动 + 说话反应 ──────────────────────────
+// 放在**开关测试之后**：这组会临时改 CFG.state，别让它污染前面的断言。
+const pageHidden = (await evalIn(main, `document.hidden === true`)) === true;
+let anim = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check(
+  '★ 立绘在呼吸（有动画对象，不是静止贴纸）',
+  anim.anims > 0 && (pageHidden || anim.animState === 'running'),
+  `hidden=${pageHidden} anims=${anim.anims} state=${anim.animState}`,
+);
+check(
+  '呼吸参数来自状态（带档位 / 时长 / 幅度）',
+  !!anim.breathTag && anim.breathDur > 2000 && anim.breathY > 0,
+  `${anim.breathTag} ${anim.breathDur}ms ${anim.breathY}px`,
+);
+
+const setState = (patch) =>
+  evalIn(
+    main,
+    `(() => { const c = window.__DSC_CFG__(); c.state = c.state || {};
+       c.state.arousal = ${patch.arousal};
+       c.state.body = Object.assign({}, c.state.body, { sleepiness: ${patch.sleepiness}, asleep: false });
+       window.__DSC_AVATAR_REPOSE__(); return true; })()`,
+  );
+
+await setState({ arousal: 0.05, sleepiness: 0.9 });
+await sleep(350);
+const sleepy = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+await setState({ arousal: 1, sleepiness: 0 });
+await sleep(350);
+const lively = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check(
+  '★ 困的时候呼吸更慢（状态真的驱动了动效）',
+  sleepy.breathDur > lively.breathDur,
+  `困=${sleepy.breathDur}ms（${sleepy.breathTag}） vs 精神=${lively.breathDur}ms（${lively.breathTag}）`,
+);
+check(
+  '困的时候幅度更大（慢而深 / 快而浅）',
+  sleepy.breathY > lively.breathY,
+  `困 ${sleepy.breathY}px vs 精神 ${lively.breathY}px`,
+);
+
+// 心情差 → 往下坠一点（很轻，但得有）
+await evalIn(
+  main,
+  `(() => { const c = window.__DSC_CFG__(); c.state.valence = 0; window.__DSC_AVATAR_REPOSE__(); return true; })()`,
+);
+await sleep(250);
+const sad = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check('心情差时姿态往下坠', /translateY\(2px\)/.test(sad.pose || ''), sad.pose);
+
+// 说话：往前凑 + 呼吸定住
+await evalIn(
+  main,
+  `(() => { const s = document.getElementById('dsc-say'); s.style.display = 'block'; s.style.opacity = '1'; return true; })()`,
+);
+await sleep(450);
+const talking = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check('★ 说话时立绘往前凑', /translateY\(-10px\)/.test(talking.pose || ''), talking.pose);
+check('★ 说话时呼吸定住（不来回飘才像在说话）', talking.animState === 'paused', `state=${talking.animState}`);
+
+await evalIn(
+  main,
+  `(() => { const s = document.getElementById('dsc-say'); s.style.opacity = '0'; s.style.display = 'none'; return true; })()`,
+);
+await sleep(450);
+const settled = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check(
+  '说完回到常态（呼吸继续）',
+  pageHidden ? true : settled.animState === 'running',
+  `state=${settled.animState} pose=${settled.pose}`,
+);
+
 // ── 截图（给主人肉眼看的） ────────────────────────────────────────
 try {
   const shot = await send(main, 'Page.captureScreenshot', { format: 'png' });

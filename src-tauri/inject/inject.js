@@ -427,6 +427,8 @@
   }
 
   function paintHud() {
+    // 立绘姿态跟着状态走 —— 放最前面：HUD 关掉时立绘照样得会呼吸
+    paintAvatarPose();
     var el = document.getElementById('dsc-hud');
     if (!el) return;
     var s = CFG.state || {};
@@ -1470,7 +1472,17 @@
   //
   // 【为什么整层 pointer-events:none】立绘是装饰，绝不能挡住页面左下角本来能点的
   // 东西 —— 整层不吃鼠标事件，主人该怎么点还怎么点。
-  var AVATAR = { id: null, url: '', ratio: 0.75 };
+  var AVATAR = { id: null, url: '', ratio: 0.75, speaking: false, on: false, breath: null, plan: null };
+
+  // 立绘动效的两条硬约束：
+  //   ① **尊重 reduced-motion** —— 没完没了的浮动会让人难受，系统开关说了算；
+  //   ② **页面藏起来就停** —— 无限动画在后台空转纯属白烧电，一个 visibilitychange 就够。
+  var AVATAR_STILL = false;
+  try {
+    AVATAR_STILL = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  } catch (e) {
+    /* 拿不到就当"能动能" */
+  }
 
   function avatarId() {
     return (CFG && CFG.personaId) || '';
@@ -1513,23 +1525,28 @@
       box.appendChild(img);
       document.body.appendChild(box);
       watchSay();
+      // 页面藏起来 → 把呼吸停掉；回来再起（applyAvatarBreath 自己看 document.hidden）
+      document.addEventListener('visibilitychange', function () {
+        applyAvatarBreath();
+      });
+      // 状态是**慢慢变**的（困倦涨、心情落），不该等下一次配置推送才动 —— 15 秒重算一次足够
+      setInterval(function () {
+        paintAvatarPose();
+      }, 15000);
       paintAvatar();
     } catch (e) {
       log('avatar-failed ' + e);
     }
   }
 
-  /** 她"说话"时立绘微微上浮 —— 学 gal-view 的「说话时加光晕」，但更轻。 */
+  /** 她"说话"时：整个人往前凑一点，同时**把呼吸定住** —— 注意力在说话上，来回飘反而假。 */
   function watchSay() {
     var say = document.getElementById('dsc-say');
     if (!say || !window.MutationObserver) return;
     try {
       new MutationObserver(function () {
-        var box = document.getElementById('dsc-avatar');
-        if (!box) return;
-        var on = say.style.display !== 'none' && say.style.opacity === '1';
-        if (box.style.opacity !== '1') return; // 本身就没显示，别去动它
-        box.style.transform = on ? 'translateY(-6px) scale(1.012)' : 'translateY(0) scale(1)';
+        AVATAR.speaking = say.style.display !== 'none' && say.style.opacity === '1';
+        paintAvatarPose();
       }).observe(say, { attributes: true, attributeFilter: ['style'] });
     } catch (e) {
       /* 监听不上只是少了动效，不影响立绘本身 */
@@ -1561,13 +1578,109 @@
       });
   }
 
+  /** 0..1 归一化（有的字段是 0..100，宽容处理，认不出就用默认值）。 */
+  function avatarUnit(v, dflt) {
+    var n = Number(v);
+    if (!isFinite(n)) return dflt;
+    if (n > 1) n = n / 100;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  /**
+   * 按当前状态算「这一口气」该多快多深。
+   *
+   * 【依据是生理直觉，不是随手调的】兴奋 = 快而浅，困 = 慢而深，睡着 = 最慢最深。
+   * 只换快慢不换幅度的话，看久了像卡帧；幅度一起变才有"活着"的感觉。
+   */
+  function avatarBreathPlan() {
+    var s = (CFG && CFG.state) || {};
+    var b = s.body || {};
+    if (b.asleep) return { dur: 7000, y: 13, tag: 'asleep' };
+    var arousal = avatarUnit(s.arousal, 0.5);
+    var sleep = avatarUnit(b.sleepiness, 0.2);
+    return {
+      dur: Math.round(4600 - (arousal - 0.5) * 2200 + sleep * 1600),
+      y: Math.round((8 - (arousal - 0.5) * 4 + sleep * 4) * 10) / 10,
+      tag: sleep >= 0.65 ? 'sleepy' : arousal >= 0.65 ? 'lively' : 'calm',
+    };
+  }
+
+  /** 把呼吸起起来 / 按新 plan 换档 / 按需暂停。 */
+  function applyAvatarBreath() {
+    var img = document.getElementById('dsc-avatar-img');
+    if (!img) return;
+    if (!AVATAR.on || AVATAR_STILL || !img.animate) {
+      if (AVATAR.breath) {
+        try {
+          AVATAR.breath.cancel();
+        } catch (e) {}
+        AVATAR.breath = null;
+      }
+      return;
+    }
+    var plan = avatarBreathPlan();
+    var wantPaused = AVATAR.speaking || !!document.hidden;
+    if (AVATAR.breath && AVATAR.plan && AVATAR.plan.dur === plan.dur && AVATAR.plan.y === plan.y) {
+      try {
+        wantPaused ? AVATAR.breath.pause() : AVATAR.breath.play();
+      } catch (e) {}
+      return;
+    }
+    if (AVATAR.breath) {
+      try {
+        AVATAR.breath.cancel();
+      } catch (e) {}
+    }
+    AVATAR.plan = plan;
+    try {
+      AVATAR.breath = img.animate(
+        [{ transform: 'translateY(0px)' }, { transform: 'translateY(-' + plan.y + 'px)' }],
+        { duration: plan.dur, iterations: Infinity, direction: 'alternate', easing: 'ease-in-out' },
+      );
+      if (wantPaused) AVATAR.breath.pause();
+    } catch (e) {
+      AVATAR.breath = null;
+    }
+  }
+
+  /**
+   * 外层盒子的「姿态」：说话往前凑 / 睡着塌下去 / 心情差往下坠。
+   *
+   * 【为什么姿态和呼吸必须分两层】两者都是 transform —— 写在同一个元素上必然互相覆盖
+   * （谁后写谁赢，另一个就僵住）。盒子管姿态、图片管呼吸，各动各的，互不干扰。
+   */
+  function paintAvatarPose() {
+    var box = document.getElementById('dsc-avatar');
+    if (!box) return;
+    var s = (CFG && CFG.state) || {};
+    var b = s.body || {};
+    var y = 0;
+    var scale = 1;
+    if (AVATAR.on) {
+      if (AVATAR.speaking) {
+        y = -10; // 说话：往前凑一点
+        scale = 1.02;
+      } else if (b.asleep) {
+        y = 5; // 睡着：整个人塌下来一点
+      } else {
+        // 心情差 → 站得往下坠一点（-2 ~ +2px）。很轻，但看得出「没精神」和「挺精神」
+        y = Math.round((0.5 - avatarUnit(s.valence, 0.5)) * 4 * 10) / 10;
+      }
+    } else {
+      y = 14;
+    }
+    box.style.opacity = AVATAR.on ? '1' : '0';
+    box.style.transform = 'translateY(' + y + 'px) scale(' + scale + ')';
+    applyAvatarBreath();
+  }
+
   /** 按「开关 + 当前角色 + 素材到手没有」决定显不显示。 */
   function paintAvatar() {
     var box = document.getElementById('dsc-avatar');
     if (!box) return;
     if (!(CFG && CFG.avatarEnabled !== false)) {
-      box.style.opacity = '0';
-      box.style.transform = 'translateY(14px)';
+      AVATAR.on = false;
+      paintAvatarPose();
       return;
     }
     // 换了角色就重取（设置里改完人设会重新推配置）
@@ -1576,8 +1689,8 @@
       return;
     }
     if (!AVATAR.url) return; // 还没拉到，保持藏着，别闪一个空框
-    box.style.opacity = '1';
-    box.style.transform = 'translateY(0) scale(1)';
+    AVATAR.on = true;
+    paintAvatarPose();
   }
 
   // ─────────────────────── 用对话同步设置 ───────────────────────
@@ -1950,7 +2063,25 @@
       opacity: box ? box.style.opacity : null,
       natW: img ? img.naturalWidth : 0,
       natH: img ? img.naturalHeight : 0,
+      // 动效现状（验收断言用）
+      speaking: AVATAR.speaking,
+      still: AVATAR_STILL,
+      breathTag: AVATAR.plan ? AVATAR.plan.tag : '',
+      breathDur: AVATAR.plan ? AVATAR.plan.dur : 0,
+      breathY: AVATAR.plan ? AVATAR.plan.y : 0,
+      anims: img && img.getAnimations ? img.getAnimations().length : 0,
+      animState: (function () {
+        if (!img || !img.getAnimations) return '';
+        var a = img.getAnimations();
+        return a.length ? a[0].playState : '';
+      })(),
+      pose: box ? box.style.transform : '',
     };
+  };
+  // 验收用：就地把姿态/呼吸重算一次（状态是脚本临时改的，不等下一次推送）
+  window.__DSC_AVATAR_REPOSE__ = function () {
+    paintAvatarPose();
+    return true;
   };
 
   log(
