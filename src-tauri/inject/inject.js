@@ -1580,6 +1580,270 @@
     box.style.transform = 'translateY(0) scale(1)';
   }
 
+  // ─────────────────────── 用对话同步设置 ───────────────────────
+  //
+  // 把配置 / 人设 / 状态 / 记忆打包，发进一个**新对话**；换设备时打开那个对话、
+  // 点「导入」读回来。走的就是本账号的对话 —— 不用第二套服务器、不用第二套鉴权。
+  //
+  // 【为什么按钮在聊天页而不是设置窗口】这些动作全要用**页面身份**：token 在这个
+  // 窗口里、读对话也只能在这儿读。放到设置窗口就得跨进程来回传，绕且脆。
+  //
+  // 【成本】导出会把整包当成一次输入发出去 —— 记忆多的时候这一下不便宜。所以点
+  // 之前弹一次确认，把"几条、多大、要花额度"说清楚再发，别让它自己闷头花钱。
+  var SYNC_OPEN = '【DS-COMPANION-SYNC 1】';
+  // 验收用：跳过 confirm。**默认关** —— 导出是真花钱的操作，不该有办法被静默触发。
+  var syncAutoConfirm = false;
+
+  function syncAsk(msg) {
+    if (syncAutoConfirm) return true;
+    return window.confirm(msg);
+  }
+
+  function localStamp() {
+    var d = new Date();
+    function p(n) {
+      return (n < 10 ? '0' : '') + n;
+    }
+    return (
+      d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+      ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+    );
+  }
+
+  /** 当前打开的是哪个对话（导入要从这儿找包）。认不出 = 主人没在对话页。 */
+  function currentSessionId() {
+    var m = String(location.pathname || '').match(/\/a\/chat\/s\/([0-9a-zA-Z-]{8,})/);
+    return m ? m[1] : '';
+  }
+
+  function setSyncNote(t) {
+    var el = document.getElementById('dsc-sync-note');
+    if (el) el.textContent = t;
+  }
+
+  function toggleSyncPanel(force) {
+    var p = document.getElementById('dsc-sync-panel');
+    if (!p) return;
+    var show = typeof force === 'boolean' ? force : p.style.display === 'none';
+    p.style.display = show ? 'block' : 'none';
+    if (show) {
+      var sid = currentSessionId();
+      setSyncNote(
+        sid ? '当前对话：' + sid.slice(0, 8) + '…（导入会读它）' : '不在对话页 —— 导入要先打开那个备份对话',
+      );
+    }
+  }
+
+  function mountSync() {
+    if (document.getElementById('dsc-sync')) return;
+    try {
+      var btn = document.createElement('div');
+      btn.id = 'dsc-sync';
+      btn.title = '用对话同步设置（导出 / 导入）';
+      btn.textContent = '⇅';
+      btn.style.cssText = [
+        'position:fixed',
+        'bottom:14px',
+        'right:130px',
+        'z-index:2147483647',
+        'width:30px',
+        'height:30px',
+        'border-radius:999px',
+        'cursor:pointer',
+        'user-select:none',
+        'text-align:center',
+        'line-height:28px',
+        'font:600 15px/28px "HarmonyOS Sans SC","Microsoft YaHei",sans-serif',
+        'color:#e9dcff',
+        'background:rgba(28,20,48,.72)',
+        'border:1px solid rgba(178,140,255,.45)',
+        'box-shadow:0 6px 24px rgba(120,80,220,.35)',
+        'backdrop-filter:blur(10px)',
+        '-webkit-backdrop-filter:blur(10px)',
+      ].join(';');
+
+      var panel = document.createElement('div');
+      panel.id = 'dsc-sync-panel';
+      panel.style.cssText = [
+        'position:fixed',
+        'bottom:52px',
+        'right:14px',
+        'z-index:2147483647',
+        'display:none',
+        'width:320px',
+        'padding:13px 14px 12px',
+        'border-radius:14px',
+        'font:500 12.5px/1.65 "HarmonyOS Sans SC","Microsoft YaHei",sans-serif',
+        'color:#f2eaff',
+        'background:linear-gradient(150deg,rgba(52,34,88,.97),rgba(30,20,52,.97))',
+        'border:1px solid rgba(196,164,255,.5)',
+        'box-shadow:0 14px 40px rgba(40,20,80,.6)',
+        'backdrop-filter:blur(14px)',
+        '-webkit-backdrop-filter:blur(14px)',
+      ].join(';');
+      panel.innerHTML =
+        '<div style="font-weight:700;font-size:13px;letter-spacing:.02em">用对话同步设置</div>' +
+        '<div style="margin-top:7px;color:#c3b7e6">把配置 / 人设 / 状态 / 记忆打成一个包，发进一个<b>新对话</b>；' +
+        '换设备时打开那个对话再导回来。立绘不搬（图太大，自己重传）。</div>' +
+        '<div style="display:flex;gap:8px;margin-top:11px">' +
+        '<button id="dsc-sync-out" style="flex:1;padding:7px 0;border-radius:9px;cursor:pointer;border:1px solid rgba(196,164,255,.55);background:rgba(140,110,230,.32);color:#f2eaff;font:600 12.5px inherit">导出到新对话</button>' +
+        '<button id="dsc-sync-in" style="flex:1;padding:7px 0;border-radius:9px;cursor:pointer;border:1px solid rgba(196,164,255,.35);background:rgba(60,44,100,.5);color:#e6dcff;font:600 12.5px inherit">从当前对话导入</button>' +
+        '</div>' +
+        '<div id="dsc-sync-note" style="margin-top:9px;color:#a99ccc;font-size:11.5px">—</div>';
+
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toggleSyncPanel();
+      });
+      document.body.appendChild(btn);
+      document.body.appendChild(panel);
+
+      panel.querySelector('#dsc-sync-out').addEventListener('click', function () {
+        syncExport().catch(function (err) {
+          setSyncNote('导出失败：' + err);
+          log('sync-export-failed ' + err);
+        });
+      });
+      panel.querySelector('#dsc-sync-in').addEventListener('click', function () {
+        syncImport().catch(function (err) {
+          setSyncNote('导入失败：' + err);
+          log('sync-import-failed ' + err);
+        });
+      });
+
+      // 角标文案会长短变化 —— 跟着量一下，别让两个按钮叠在一起
+      var badge = document.getElementById('dsc-badge');
+      if (badge && window.ResizeObserver) {
+        try {
+          new ResizeObserver(placeSync).observe(badge);
+        } catch (e) {
+          /* 量不到就先用默认位置 */
+        }
+      }
+      placeSync();
+    } catch (e) {
+      log('sync-mount-failed ' + e);
+    }
+  }
+
+  /** 同步按钮贴在角标左边（角标宽度是动态的，所以得真量） */
+  function placeSync() {
+    var btn = document.getElementById('dsc-sync');
+    var badge = document.getElementById('dsc-badge');
+    if (!btn) return;
+    var w = badge ? badge.getBoundingClientRect().width : 0;
+    btn.style.right = (14 + (w || 96) + 8) + 'px';
+  }
+
+  /** 导出：打包 → 建一个**空对话** → 把包发进去 */
+  async function syncExport() {
+    var util = window.__DSC_DS_UTIL__;
+    if (!util || typeof util.completion !== 'function') {
+      setSyncNote('同步通道不可用（注入脚本没起全），刷新页面再来');
+      return;
+    }
+    var stamp = localStamp();
+    setSyncNote('正在打包…');
+    var pack;
+    try {
+      pack = await invoke('dsc_sync_pack', { at: stamp });
+    } catch (e) {
+      setSyncNote('打包失败：' + e);
+      return;
+    }
+    var kb = Math.max(1, Math.round(pack.bytes / 1024));
+    var ok = syncAsk(
+      '把设置打包发进一个新的 DeepSeek 对话？\n\n' +
+        '内容：人设 ' + pack.personas + ' 份 · 状态 ' + pack.states + ' 个 · 记忆 ' +
+        pack.memories + ' 条 · 立绘名单 ' + pack.avatars + ' 张（图不搬）\n' +
+        '大小：约 ' + kb + ' KB\n\n' +
+        '⚠ 这一段会整段进模型上下文，按你的套餐额度计费。\n' +
+        '⚠ 发出去 = 内容存在 DeepSeek 服务器上（你自己的账号）。',
+    );
+    if (!ok) {
+      setSyncNote('已取消');
+      return;
+    }
+    setSyncNote('正在建空对话…');
+    var sid;
+    try {
+      sid = await util.ensureSession(true, 'sync');
+    } catch (e) {
+      setSyncNote('建对话失败：' + e);
+      return;
+    }
+    setSyncNote('正在发送（' + kb + ' KB）…');
+    // 第一行写人话：DeepSeek 会拿它生成对话标题，纯 JSON 开头的话标题会很难看
+    var payload = 'DS Companion 设置备份 · ' + stamp + '\n' + pack.text;
+    try {
+      var r = await util.completion({ sessionId: sid, parentMessageId: null, prompt: payload });
+      setSyncNote('导出好了（' + kb + ' KB）· 对话 ' + String(sid).slice(0, 8) + '… 稍后刷新侧边栏就能看到');
+      log('sync-export ok session=' + sid + ' bytes=' + pack.bytes + ' reply=' + JSON.stringify(String(r && r.text).slice(0, 60)));
+    } catch (e) {
+      setSyncNote('发送失败：' + e);
+      log('sync-export send-failed ' + e);
+    }
+  }
+
+  /** 导入：从**当前打开的对话**里把包读回来 → 交给壳落盘 */
+  async function syncImport() {
+    var util = window.__DSC_DS_UTIL__;
+    if (!util || typeof util.historyMessages !== 'function') {
+      setSyncNote('同步通道不可用（注入脚本没起全），刷新页面再来');
+      return;
+    }
+    var sid = currentSessionId();
+    if (!sid) {
+      setSyncNote('先打开那个备份对话，再点导入');
+      return;
+    }
+    setSyncNote('正在读对话…');
+    var msgs;
+    try {
+      msgs = await util.historyMessages(sid);
+    } catch (e) {
+      setSyncNote('读对话失败：' + e);
+      return;
+    }
+    var found = null;
+    for (var i = msgs.length - 1; i >= 0; i--) {
+      var t = msgs[i] && msgs[i].text ? String(msgs[i].text) : '';
+      if (t.indexOf(SYNC_OPEN) !== -1) {
+        found = t;
+        break;
+      }
+    }
+    if (!found) {
+      setSyncNote('这个对话里没找到备份包（共读了 ' + msgs.length + ' 条消息）');
+      return;
+    }
+    var ok = syncAsk(
+      '用这个对话里的备份覆盖本机设置？\n\n' +
+        '· 配置 / 人设 / 状态：覆盖（覆盖前会自动备份一份）\n' +
+        '· 记忆：**只增不删**（本地已有的 id 一条都不动）\n' +
+        '· 立绘：不搬，缺哪张会列出来',
+    );
+    if (!ok) {
+      setSyncNote('已取消');
+      return;
+    }
+    setSyncNote('正在落盘…');
+    try {
+      var rep = await invoke('dsc_sync_apply', { text: found });
+      var extra = rep.avatarsMissing && rep.avatarsMissing.length
+        ? ' · 立绘缺 ' + rep.avatarsMissing.length + ' 张'
+        : '';
+      setSyncNote(
+        '导入完成：人设 ' + rep.personas + ' · 状态 ' + rep.states +
+          ' · 记忆 +' + rep.memoriesAdded + '（跳过 ' + rep.memoriesSkipped + '）' + extra,
+      );
+      log('sync-import ok ' + JSON.stringify(rep).slice(0, 300));
+    } catch (e) {
+      setSyncNote('落盘失败：' + e);
+      log('sync-import apply-failed ' + e);
+    }
+  }
+
   // ─────────────────────── 配置更新 ───────────────────────
   window.__DSC_SET_CONFIG__ = function (next) {
     CFG = next || { cadence: 'off', personaText: '' };
@@ -1646,9 +1910,38 @@
     loadAvatar(true);
     return true;
   };
+  /** 同步面板现状（不点按钮也能断言） */
+  window.__DSC_SYNC__ = function () {
+    var btn = document.getElementById('dsc-sync');
+    var panel = document.getElementById('dsc-sync-panel');
+    var note = document.getElementById('dsc-sync-note');
+    var util = window.__DSC_DS_UTIL__;
+    return {
+      mounted: !!btn,
+      panelShown: !!panel && panel.style.display !== 'none',
+      note: note ? note.textContent : '',
+      sessionId: currentSessionId(),
+      hasCompletion: !!(util && typeof util.completion === 'function'),
+      hasHistory: !!(util && typeof util.historyMessages === 'function'),
+      autoConfirm: syncAutoConfirm,
+    };
+  };
+  window.__DSC_SYNC_PANEL__ = function (show) {
+    toggleSyncPanel(!!show);
+    return true;
+  };
+  window.__DSC_SYNC_AUTOCONFIRM__ = function (on) {
+    syncAutoConfirm = !!on;
+    return syncAutoConfirm;
+  };
+  window.__DSC_SYNC_EXPORT__ = function () {
+    return syncExport();
+  };
+  window.__DSC_SYNC_IMPORT__ = function () {
+    return syncImport();
+  };
   /** 立绘现状（验收脚本断言用；不依赖 DOM 也能拿到） */
-  window.__DSC_AVATAR__ = function () {
-    var box = document.getElementById('dsc-avatar');
+  window.__DSC_AVATAR__ = function () {    var box = document.getElementById('dsc-avatar');
     var img = document.getElementById('dsc-avatar-img');
     return {
       id: AVATAR.id,
@@ -1678,6 +1971,7 @@
     mountHud();
     mountSay();
     mountAvatar();
+    mountSync();
     if (mounted) return;
     mounted = true;
     // 空闲判定：任何交互都算"主人在"

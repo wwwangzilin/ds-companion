@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-sync-apply"
+description = "Enables the dsc_sync_apply command without any pre-configured scope."
+commands.allow = ["dsc_sync_apply"]
+
+[[permission]]
+identifier = "deny-dsc-sync-apply"
+description = "Denies the dsc_sync_apply command without any pre-configured scope."
+commands.deny = ["dsc_sync_apply"]

@@ -40,6 +40,9 @@
     memory: { session: 'dsc-memory-session', chain: 'dsc-chain-memory' },
     judge: { session: 'dsc-judge-session', chain: 'dsc-chain-judge' },
     ping: { session: 'dsc-ping-session', chain: 'dsc-chain-ping' },
+    // 设置同步：每次导出都**另开一个空对话**（force），不复用 —— 复用会让每条新包
+    // 把之前所有包都当上下文带上，成本一次比一次高。攒下来的备份对话主人自己删。
+    sync: { session: 'dsc-sync-session', chain: 'dsc-chain-sync' },
   };
   var DEFAULT_CHAIN_TURNS = 20;
 
@@ -331,6 +334,97 @@
       lastAssistantId: lastAssistant,
       currentMessageId: Number((biz && biz.chat_session && biz.chat_session.current_message_id) || 0),
     };
+  }
+
+  /**
+   * 把一条历史消息里的**正文**抠出来。
+   *
+   * 【为什么不能直接读 m.content】各版本的形状不一样：有的是纯字符串，有的是
+   * `{"content":"…"}` 这样的 JSON 字符串，还有的把正文放进 fragments。注入脚本
+   * 面对的是**别人家的接口**，形状随时会变 —— 认不出就返回空串，让调用方去报
+   * "没找到包"，而不是抛一个看不懂的异常。
+   */
+  function contentText(value, depth) {
+    var d = depth || 0;
+    if (d > 3) return '';
+    if (typeof value === 'string') {
+      var s = value.trim();
+      if (s.charAt(0) === '{' || s.charAt(0) === '[') {
+        try {
+          var inner = contentText(JSON.parse(s), d + 1);
+          if (inner) return inner;
+        } catch (e) {
+          /* 不是 JSON，就当纯文本 */
+        }
+      }
+      return value;
+    }
+    if (Array.isArray(value)) {
+      var parts = [];
+      for (var i = 0; i < value.length; i++) {
+        var t = contentText(value[i], d + 1);
+        if (t) parts.push(t);
+      }
+      return parts.join('');
+    }
+    if (value && typeof value === 'object') {
+      var keys = ['content', 'text', 'value'];
+      for (var ki = 0; ki < keys.length; ki++) {
+        var k = keys[ki];
+        if (typeof value[k] === 'string' && value[k]) return contentText(value[k], d + 1);
+      }
+      var fkeys = ['fragments', 'parts'];
+      for (var fi = 0; fi < fkeys.length; fi++) {
+        var fk = fkeys[fi];
+        if (Array.isArray(value[fk])) {
+          var frags = value[fk];
+          var out = [];
+          for (var j = 0; j < frags.length; j++) {
+            var f = frags[j];
+            var ty = String((f && f.type) || '').toUpperCase();
+            // THINK 是思考，不算正文（跟 SSE 解析那边一个口径）
+            if (ty === 'THINK' || ty === 'THINKING') continue;
+            var ft = contentText(f && (f.content !== undefined ? f.content : f), d + 1);
+            if (ft) out.push(ft);
+          }
+          if (out.length) return out.join('');
+        }
+      }
+    }
+    return '';
+  }
+
+  /**
+   * 读某会话的**完整消息**（含正文）—— 设置同步要把自己发进去的包读回来。
+   *
+   * 和 historyTail 的区别：那个只抠 id（给会话链当 parent 用），这个要正文。两条
+   * 各留各的：会话链是每轮都要跑的，让它顺带搬一堆正文纯属浪费。
+   */
+  async function historyMessages(sessionId) {
+    var url =
+      ROUTES.historyMessages +
+      '?chat_session_id=' +
+      encodeURIComponent(String(sessionId)) +
+      '&count=200';
+    var res = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      headers: clientHeaders(),
+    });
+    if (!res.ok) throw new Error('history HTTP ' + res.status);
+    var json = await res.json();
+    var biz = json && json.data && json.data.biz_data;
+    var msgs = (biz && biz.chat_messages) || [];
+    var out = [];
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i] || {};
+      out.push({
+        messageId: Number(m.message_id) || 0,
+        role: String(m.role || ''),
+        text: contentText(m.content !== undefined ? m.content : m),
+      });
+    }
+    return out;
   }
 
   // ── SSE 解析（按 fragment 归并，正文与思考分开） ──────────────────
@@ -904,6 +998,8 @@
     clientHeaders: clientHeaders,
     ensureSession: ensureSession,
     historyTail: historyTail,
+    historyMessages: historyMessages,
+    contentText: contentText,
     readChain: readChain,
     completion: completion,
     ask: ask,

@@ -32,6 +32,7 @@ mod memory;
 mod personas;
 mod propose;
 mod state;
+mod sync;
 mod tools;
 
 use std::fs::OpenOptions;
@@ -1636,6 +1637,23 @@ fn dsc_avatar_clear(id: String) -> Result<AvatarView, String> {
     Ok(avatar_view(&id))
 }
 
+// ─────────────────────── 用对话同步设置 ───────────────────────
+//
+// 打包在壳里（文件都在这儿），发消息在页面里（只有它有登录态）—— 所以这里是
+// 「取包」与「收包」两个端点，中间那段路走 DeepSeek 对话，壳一概不碰网络。
+
+/// 把当前设置打成一个包（页面拿到文本后发进一个新对话）。
+#[tauri::command]
+fn dsc_sync_pack(at: String) -> Result<sync::SyncPackView, String> {
+    sync::pack(&at)
+}
+
+/// 把从对话里读回来的包落到本地（先备份、记忆只增不删、立绘不搬）。
+#[tauri::command]
+fn dsc_sync_apply(text: String) -> Result<sync::SyncApplyReport, String> {
+    sync::apply(&text)
+}
+
 /// 打开数据目录：点一下就能看到自己的记忆/人设/状态文件在哪
 #[tauri::command]
 fn data_reveal() -> Result<(), String> {
@@ -2321,6 +2339,8 @@ pub fn run() {
             dsc_avatar_get,
             dsc_avatar_set,
             dsc_avatar_clear,
+            dsc_sync_pack,
+            dsc_sync_apply,
             trash_prune,
             autostart_get,
             autostart_set,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-sync-pack"
+description = "Enables the dsc_sync_pack command without any pre-configured scope."
+commands.allow = ["dsc_sync_pack"]
+
+[[permission]]
+identifier = "deny-dsc-sync-pack"
+description = "Denies the dsc_sync_pack command without any pre-configured scope."
+commands.deny = ["dsc_sync_pack"]

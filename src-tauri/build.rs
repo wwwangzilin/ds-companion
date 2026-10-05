@@ -94,6 +94,10 @@ fn main() {
             "dsc_avatar_get",
             "dsc_avatar_set",
             "dsc_avatar_clear",
+            // 对话同步：打包与落包都得在页面里发起（只有页面有登录态，
+            // 发消息/读对话都得用它）；壳只提供两个纯本地端点。
+            "dsc_sync_pack",
+            "dsc_sync_apply",
         ])),
     )
     .expect("failed to run tauri-build");
