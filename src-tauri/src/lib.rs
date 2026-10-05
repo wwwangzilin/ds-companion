@@ -461,6 +461,7 @@ fn dsc_turn_report(
     user_text: String,
     hour: u32,
     day: Option<String>,
+    ooc: Option<bool>,
 ) -> TurnReport {
     let cfg = config::load();
     let character = personas::active_character_id(cfg.active_persona.as_deref());
@@ -519,6 +520,18 @@ fn dsc_turn_report(
         !task_mode && state::want_model_sense(&cfg.sense_mode, cfg.sense_every_turns, &st, &sig);
     // 待回访：到期的伏笔在这一轮就交出去，并**当场标记"问过了"**。
     // 标记必须发生在 save 之前，否则下一轮会把同一件事再注一遍 —— 追问比不问更烦。
+    // 出戏那一轮：**身体先说话**（心跳上去、脸烫、呼吸乱）。
+    //
+    // 【为什么放这儿而不是只写在提示词里】提示词能让她写得像慌了，但那只活在一句话里；
+    // 身体层是**会跟着她走**的那份数据 —— HUD、【状态】块、设置页都看得见，下一轮还没
+    // 平下来，连贯性是数据给的、不是编的。页面按「这条消息里有没有暗号」告诉壳（`ooc`）。
+    if ooc.unwrap_or(false) {
+        state::fluster(&mut st.body);
+        shell_log(&format!(
+            "[state] 出戏：身体反应 心跳={} 体温={:.2}",
+            st.body.heart_rate, st.body.warmth
+        ));
+    }
     let pending_whats = state::take_due_pending(&mut st, day.as_deref().unwrap_or(""), now);
     let saved = state::save_state(&st).unwrap_or(st);
 

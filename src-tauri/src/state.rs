@@ -1902,6 +1902,23 @@ pub fn add_pending(s: &mut CharState, what: &str, due: &str, now: u64) {
     });
 }
 
+/// 被叫住（出戏）时的身体反应：心跳上去、脸烫、呼吸乱。
+///
+/// 【为什么落在身体层】她慌了这件事，全靠模型自由发挥，十有八九是一坨形容词；而身体层是
+/// **她自己会变的那部分**：HUD、设置页、【状态】块都看得见它。写进去之后这一轮的她
+/// 心跳 105、下一轮还没平下来 —— 连贯性是数据给的，不是编的。
+///
+/// 上限 140：它是「慌」，不是让心脏炸掉（心跳这个数在界面和身体语言里都得说得通）。
+pub fn fluster(body: &mut Body) {
+    body.heart_rate = body.heart_rate.saturating_add(22).min(140);
+    body.warmth = clamp01(body.warmth + 0.18);
+    body.breath = clamp01(body.breath + 0.25);
+    // 【可能被同轮的渲染覆盖】身体语言那条链（`render_body_language`）在 turn_report 里
+    // 是按数值统一生成的，它跑在 fluster 之后就会盖掉这句。心跳与体温不受影响 ——
+    // 那才是主信号；这句是给"界面直接看 fluster 的场合"用的兜底。
+    body.language = "刚被叫住，耳朵发烫，尾巴僵在半空".to_string();
+}
+
 /// 到期的伏笔（顺手**标记为已问**，并清掉过期的）。
 ///
 /// 【为什么"取"的时候就标记】取出来 = 马上就要注进上下文 = 她知道了。
@@ -2428,6 +2445,22 @@ mod tests {
         assert!(out.contains("别罗列"), "她得知道别一口气全倒出来：{out}");
         assert!(out.starts_with("【待回访】"), "标题要自带：{out}");
         assert!(out.lines().count() <= 5, "{out}");
+    }
+
+    /// 出戏的身体反应：心跳上去、脸烫、有身体语言，而且**封顶**。
+    #[test]
+    fn fluster_raises_heart_and_caps() {
+        let mut b = Body::default();
+        let before = b.heart_rate;
+        fluster(&mut b);
+        assert!(b.heart_rate > before, "心跳得上去：{before} -> {}", b.heart_rate);
+        assert!(b.warmth > 0.5, "脸得烫：{}", b.warmth);
+        assert!(!b.language.is_empty(), "身体语言别空着");
+        for _ in 0..20 {
+            fluster(&mut b);
+        }
+        assert!(b.heart_rate <= 140, "别把心脏推炸：{}", b.heart_rate);
+        assert!(b.warmth <= 1.0 && b.breath <= 1.0, "比例类的要夹在 0-1");
     }
 
     fn sig(v: f32, a: f32, i: f32) -> Signal {

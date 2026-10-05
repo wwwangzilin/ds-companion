@@ -193,6 +193,14 @@ check('没打暗号就不加【出戏】', !String(plain).includes('【出戏】
 const ooc = await probe('喂 // 出来一下');
 check('打了暗号才加【出戏】', String(ooc).includes('【出戏】'), String(ooc).slice(0, 120));
 check('出戏块说清了"跟本人说话"', String(ooc).includes('你本人'), String(ooc).slice(0, 200));
+// ★这两条是补上一次翻车的：块里必须同时钉住「思考仍是露娜」和「身体先说话」★
+// （上一版只写了「用你自己的身份、平实的话」，结果它把整层皮都扒了，连内心独白都成了助手腔）
+check(
+  '出戏块要求身体先说话（心跳/脸红/磕巴）',
+  String(ooc).includes('心跳') && String(ooc).includes('磕巴'),
+  String(ooc).slice(0, 300),
+);
+check('出戏块钉住了：思考仍是露娜', String(ooc).includes('思考') && String(ooc).includes('露娜'), String(ooc).slice(0, 300));
 // ★暗号要放在**远离末尾**的地方才算"历史"★
 // 第一版写成了 `长文本 + 暗号`（暗号在最后）—— 那它当然落在"末尾 600 字"里，
 // 断言必然红：错的不是实现，是我造的样本。

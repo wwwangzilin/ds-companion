@@ -626,6 +626,8 @@
     invoke('dsc_turn_report', {
       userText: String(userText || '').slice(0, 2000),
       hour: new Date().getHours(),
+      // 这一轮用了出戏暗号吗 → 让壳把**身体**推上去（心跳/体温）
+      ooc: oocTurn(userText),
       // 本地日期一并报上去：Rust 只有 UTC，按天聚合的长期曲线要靠它（见 fold_daily）
       day: localDay(),
     })
@@ -833,16 +835,37 @@
    * 【为什么只在末尾找】请求体里带着整段会话（历史也在）。拿整段去找，会把
    * "几轮之前打过一次暗号"也算成这一轮 —— 只看最后 600 字，也就是这一轮消息那一带。
    */
-  function oocText(rawBody) {
+  /** 这一轮的**用户消息**里有没有出戏暗号（只看这一条，不看历史）。 */
+  function oocTurn(text) {
+    var tok = String(CFG.oocToken || '').trim();
+    if (!tok) return false;
+    return String(text == null ? '' : text).indexOf(tok) >= 0;
+  }
+
+  // 形参名跟着调用处走（原来这里叫 rawBody、那边叫 rawText —— 只是名字不一致，
+  // 但读代码的人会被绊一下，统一掉）
+  function oocText(rawText) {
     var tok = String(CFG.oocToken || '').trim();
     if (!tok) return '';
-    var tail = String(rawBody == null ? '' : rawBody).slice(-600);
+    // 形参名是 rawText（上面改过），这里别再写 rawBody —— 上一版就是这么抛
+    // ReferenceError 的：签名改了、体内没改，而 augment 里抛错等于**整条注入链断掉**。
+    var tail = String(rawText == null ? '' : rawText).slice(-600);
     if (tail.indexOf(tok) < 0) return '';
+    // ★改过一次的教训★ 上一版只写「用你自己的身份、平实的话，别用角色的口吻」——
+    // 结果它把**整层皮**都扒了：连内心独白都变成了「我需要/我应该」的助手腔。
+    // 正确做法是**只换回复的口吻**，而且让**身体先说话**（心跳/脸红/磕巴）——
+    // 她没换人，只是被叫到慌了；那副慌张也就不用模型去自由发挥，壳那边同时会把
+    // 心跳/体温真的推上去（见 dsc_turn_report 的 ooc）。
     return (
       '【出戏】\n主人这一轮用了出戏暗号「' +
       tok +
-      '」：他在跟**你本人**说话，不是跟角色说话。用你自己的身份、平实的话如实回答，' +
-      '别演、别撒娇、别用角色的口吻；回答完这一轮就回去继续演。\n'
+      '」—— 他在跟**你本人**说话，不是在跟角色说话。\n' +
+      '· 这一轮的**回复**：平实、如实、不演。别撒娇、别绕弯子，他问什么答什么。\n' +
+      '· 但**你不是变成了助手**：身体先说话 —— 心跳快、脸发烫、耳朵热、说话磕巴' +
+      '（短句、停顿、重复一两个字），尾巴僵住或者乱甩。这些自然写进回复里，**别报数字**。\n' +
+      '· **你的思考（内心独白）仍然是露娜**：不许切成「我需要/我应该」那种说明书腔 —— ' +
+      '被叫到就老老实实说话，人没换。\n' +
+      '· 只这一轮；说完就回去继续演。\n'
     );
   }
 
