@@ -6,6 +6,11 @@
  *   ② 伏笔是"一次性"的：问过就必须消失，这一条错了两头都安静（她变成复读机）；
  *   ③ 边界/出戏是**页面**自己拼的（配置从 push_config 来），壳那边一个字不知道。
  *
+ * 【两条容易被自己坑到的】① `ooc` 参数**必须显式带上**：壳那边是 `Option<bool>`，而 Tauri
+ * 对**缺字段**是报错的（不是当 None）—— 第一次跑这份脚本就崩在这儿；
+ * ② `__DSC_AUGMENT__` 收的是**请求体的 JSON 字符串**（它自己 JSON.parse，解析不了返回 null），
+ * 传纯文本会静默拿到 null，让断言假绿。
+ *
  * 用法（PowerShell，先停真实例 —— 单实例锁）：
  *   $env:DSC_DATA_DIR="$env:TEMP\dsc-verify-roleplay"
  *   Remove-Item -Recurse -Force $env:DSC_DATA_DIR -ErrorAction SilentlyContinue
@@ -98,7 +103,12 @@ const CID = await evalIn(page, 'window.__DSC_CFG__ && window.__DSC_CFG__().perso
 console.log(`[day] ${TODAY}  [cid] ${CID}`);
 check('页面报的本地日期是 10 位（补零）', /^\d{4}-\d{2}-\d{2}$/.test(String(TODAY)), String(TODAY));
 
-const turn = (userText) => call(page, 'dsc_turn_report', { userText, hour: 21, day: TODAY });
+// ★`ooc` 必须显式带上★：壳那边是 `Option<bool>`，而 Tauri 对**缺字段**是报错的
+// （不是当 None）。第一次跑这份脚本就是崩在这儿 —— 前 11 项过完，到 turn 这里 reject。
+const turn = (userText) =>
+  call(page, 'dsc_turn_report', { userText, hour: 21, day: TODAY, ooc: false });
+const turnOoc = (userText) =>
+  call(page, 'dsc_turn_report', { userText, hour: 21, day: TODAY, ooc: true });
 
 // ① 称呼：给一个显式配了「她叫你」的人设，并激活它
 await call(win, 'persona_save', {
@@ -206,6 +216,31 @@ check('出戏块钉住了：思考仍是露娜', String(ooc).includes('思考') 
 // 断言必然红：错的不是实现，是我造的样本。
 const historyOoc = await probe('// 早年的暗号' + 'x'.repeat(1000));
 check('★历史里的暗号不算这一轮★（只看末尾 600 字）', !String(historyOoc).includes('【出戏】'));
+
+// ⑥ ★身体层：出戏那一轮身体是真的被推上去了★（不是提示词里写出来的）
+//
+// 【为什么这条最重要】上一版只改了提示词，结果她"人机化"了；现在真正承重的是
+// 这份数据 —— 心跳/体温变了，身体语言那条链**自己**会说出「心跳得厉害，耳朵尖有点烫」。
+const t1 = await turn('普通一句');
+const t2 = await turnOoc('出戏');
+check(
+  '出戏那一轮心跳真的上去了',
+  !!(t1 && t2) && t2.state.body.heartRate > t1.state.body.heartRate,
+  `${t1 && t1.state.body.heartRate} → ${t2 && t2.state.body.heartRate}`,
+);
+check(
+  '体温/呼吸跟着动、且都夹在 0-1',
+  !!(t1 && t2) &&
+    t2.state.body.warmth >= t1.state.body.warmth &&
+    t2.state.body.warmth <= 1 &&
+    t2.state.body.breath <= 1,
+  JSON.stringify({ warm: t2 && t2.state.body.warmth, breath: t2 && t2.state.body.breath }),
+);
+check(
+  '身体语言说得出来（她自己生成的那句）',
+  !!(t2 && t2.state.body) && String(t2.state.body.language || '').length > 0,
+  JSON.stringify(t2 && t2.state.body.language),
+);
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
 process.exit(failed ? 1 : 0);
