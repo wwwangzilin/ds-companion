@@ -76,6 +76,13 @@ pub struct AppConfig {
     pub proactive_quiet_from: Option<u32>,
     #[serde(default)]
     pub proactive_quiet_to: Option<u32>,
+    /// 她**不该主动提起**的话题（换行或顿号分隔）。空 = 没有这条边界。
+    #[serde(default)]
+    pub boundaries_avoid: String,
+    /// 出戏暗号：主人打出这个词（这一轮的最后一段里出现即可）就当他在跟"你"说话，
+    /// 这一轮跳出角色如实回答。空 = 不启用（默认空 —— 没配就别自作主张认暗号）。
+    #[serde(default)]
+    pub ooc_token: String,
     /// 页面右下角状态 HUD
     #[serde(default = "default_true")]
     pub hud_enabled: bool,
@@ -233,6 +240,8 @@ impl Default for AppConfig {
             // 加了默认时段就等于凭空给他禁言了某几个小时）
             proactive_quiet_from: None,
             proactive_quiet_to: None,
+            boundaries_avoid: String::new(),
+            ooc_token: String::new(),
             hud_enabled: true,
             body_enabled: true,
             user_state_enabled: true,
@@ -324,6 +333,9 @@ pub struct InjectPayload {
     /// 「到了安静时段」而不是「链路坏了」
     pub proactive_quiet_from: Option<u32>,
     pub proactive_quiet_to: Option<u32>,
+    /// 边界与出戏暗号（页面据此决定要不要加【边界】/【出戏】块）
+    pub boundaries_avoid: String,
+    pub ooc_token: String,
     /// 身体层 / 对方状态各自的开关（页面据此决定显示哪几行）
     pub body_enabled: bool,
     pub user_state_enabled: bool,
@@ -427,6 +439,8 @@ pub fn inject_payload() -> InjectPayload {
         proactive_daily_cap: cfg.proactive_daily_cap,
         proactive_quiet_from: cfg.proactive_quiet_from,
         proactive_quiet_to: cfg.proactive_quiet_to,
+        boundaries_avoid: cfg.boundaries_avoid.clone(),
+        ooc_token: cfg.ooc_token.clone(),
         body_enabled: cfg.body_enabled,
         user_state_enabled: cfg.user_state_enabled,
         user_state,
@@ -510,6 +524,8 @@ mod tests {
         assert_eq!(d.proactive_daily_cap, 6, "就算开了也别刷屏");
         assert_eq!(d.proactive_quiet_from, None, "安静时段默认不配 = 全天都能说");
         assert_eq!(d.proactive_quiet_to, None, "默认绝不偷偷改掉既有行为");
+        assert!(d.boundaries_avoid.is_empty(), "默认没有额外边界");
+        assert!(d.ooc_token.is_empty(), "默认不认任何暗号 —— 没配就别自作主张");
         assert!(d.sense_daily_cap > 0, "模型感知要有当日闸");
         assert!(d.hud_enabled);
     }

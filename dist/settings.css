@@ -178,6 +178,38 @@
   font-size: 12px;
 }
 
+/* ── 场景预设（一排小筹码）────────────────────────────────────────
+   跟日记那排日期按钮同族：选中的那个亮起来，一眼看得出现在挂的是哪个场景。 */
+.scene-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.scene-chip {
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s, color 0.16s;
+}
+
+.scene-chip:hover {
+  border-color: var(--line-2);
+  color: var(--text);
+}
+
+.scene-chip.on {
+  border-color: var(--v);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
 html,
 body {
   height: 100%;

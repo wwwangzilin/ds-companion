@@ -99,6 +99,10 @@
                   <input id="f-desc" placeholder="一句话说明这个人设的用途" />
                 </label>
               </div>
+              <label class="field">
+                <span>她叫你<em>留空 = 由人设正文决定</em></span>
+                <input id="f-address" placeholder="例如：主人 / 老板 / 名字" />
+              </label>
               <label class="field grow">
                 <span>人设正文<em>会拼在发送内容前面交给模型</em></span>
                 <textarea id="f-body" spellcheck="false" placeholder="你是「…」，一个…"></textarea>
@@ -146,6 +150,25 @@
             </div>
           </section>
 
+          <!-- 「场景」：我们此刻在哪。角色扮演的地基 —— 没有它，她只能在真空里说话。
+               放在「今天」下面，是因为这两张卡是"现在"的两种问法：她怎么样 / 我们在哪。 -->
+          <section class="editor" id="scene-card">
+            <header class="editor-head">
+              <h2>场景</h2>
+              <span class="editor-sub" id="scene-sub">—</span>
+            </header>
+            <div class="scene-presets" id="scene-presets"></div>
+            <label class="field">
+              <span>我们此刻在哪<em>一句话：地点 / 时间 / 氛围</em></span>
+              <input id="sf-scene" placeholder="例如：深夜书房，台灯只开了一盏，她趴在桌角陪你" />
+            </label>
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <button class="btn ghost" id="scene-save">设置场景</button>
+              <button class="btn ghost" id="scene-clear">清空</button>
+            </div>
+            <p class="hint" id="scene-hint">—</p>
+          </section>
+
           <!-- 「她的状态曲线」：一天一行，画好感与情绪的长期走势。
                放在「今天」下面，是因为"今天"回答"她现在怎么样"、
                这条线回答"这一个月她对我怎么变的"。 -->
@@ -174,6 +197,23 @@
             <div style="display:flex;gap:8px;margin-top:10px">
               <button class="btn ghost" id="diary-refresh">刷新</button>
             </div>
+          </section>
+
+          <!-- 「边界与出戏」：她不该碰的话题，以及一个把角色叫停的暗号。 -->
+          <section class="editor" id="boundary-card">
+            <header class="editor-head">
+              <h2>边界与出戏</h2>
+              <span class="editor-sub" id="boundary-sub">—</span>
+            </header>
+            <label class="field">
+              <span>别主动提的话题<em>换行分隔；留空 = 没有这条边界</em></span>
+              <textarea id="sf-avoid" rows="2" placeholder="例如：体重&#10;前任"></textarea>
+            </label>
+            <label class="field">
+              <span>出戏暗号<em>打出它，这一轮她跳出来如实回答；留空 = 不启用</em></span>
+              <input id="sf-ooc" placeholder="例如：//" />
+            </label>
+            <p class="hint" id="boundary-hint">—</p>
           </section>
 
           <section class="hero">

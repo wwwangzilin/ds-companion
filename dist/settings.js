@@ -299,6 +299,7 @@ function openEditor(id) {
   current = { ...p };
   $('f-name').value = p.name;
   $('f-desc').value = p.description || '';
+  $('f-address').value = p.address || '';
   $('f-body').value = p.body || '';
   $('editor-title').textContent = p.name;
   $('editor-meta').textContent = `${p.id} · 来源 ${p.source || 'manual'}`;
@@ -309,9 +310,10 @@ function openEditor(id) {
 }
 
 function newPersona() {
-  current = { id: '', name: '', description: '', source: 'manual', body: '' };
+  current = { id: '', name: '', description: '', source: 'manual', body: '', address: '' };
   $('f-name').value = '';
   $('f-desc').value = '';
+  $('f-address').value = '';
   $('f-body').value = '';
   $('editor-title').textContent = '新建人设';
   $('editor-meta').textContent = '填好名字与正文后保存';
@@ -338,6 +340,7 @@ async function saveCurrent() {
     id: current && current.id ? current.id : '',
     name,
     description: $('f-desc').value.trim(),
+    address: $('f-address').value.trim(),
     source: (current && current.source) || 'manual',
     body: $('f-body').value,
   };
@@ -1430,6 +1433,93 @@ async function addMilestone() {
   }
 }
 
+/** 场景的预设：名字 + 一句话背景。挑一个 = 换场景，也可以自己写。 */
+const SCENE_PRESETS = [
+  ['深夜书房', '深夜的书房，台灯只开了一盏，屏幕的光打在两个人脸上'],
+  ['雨天便利店', '雨夜的便利店门口，屋檐在滴水，手里捧着一杯热的'],
+  ['周末午后', '周末午后，阳光斜着照进来，谁都不想动'],
+  ['一起赶工', '凌晨，主人还在赶活，她在旁边陪着（偶尔捣乱）'],
+  ['出门散步', '傍晚的街上，风不大，边走边聊'],
+];
+
+// ── 场景（我们此刻在哪）────────────────────────────────────────────
+//
+// 【为什么值得一张卡】角色扮演的细节全靠场景锚定。没有它，她只能在真空里撒娇，
+// 三句就开始重复 —— 她其实一直在**自己编场景**，只是没有地方把它放下来。
+function renderScene() {
+  const box = $('scene-presets');
+  if (!box) return;
+  const s = (stCurrent && stCurrent.scene) || {};
+  const text = String(s.text || '');
+  $('sf-scene').value = text;
+  box.innerHTML = SCENE_PRESETS.map(
+    (p) =>
+      '<button class="scene-chip' +
+      (s.name === p[0] ? ' on' : '') +
+      '" data-name="' +
+      escapeHtml(p[0]) +
+      '" data-text="' +
+      escapeHtml(p[1]) +
+      '">' +
+      escapeHtml(p[0]) +
+      '</button>',
+  ).join('');
+  for (const b of box.querySelectorAll('.scene-chip')) {
+    b.addEventListener('click', () => saveScene(b.dataset.name, b.dataset.text));
+  }
+  const sub = $('scene-sub');
+  if (sub) sub.textContent = text ? s.name || '自定义' : '没设';
+  const hint = $('scene-hint');
+  if (hint) {
+    hint.textContent = text
+      ? '她此刻把「' + text + '」当作背景；改一个字都算换场景。'
+      : '没设场景 = 不加【场景】块（零注入）。挑一个预设，或者自己写一句。';
+  }
+}
+
+/** 存场景。走既有的 `state_save`（不新开命令）—— 它本来就是整份状态写回。 */
+async function saveScene(name, text) {
+  if (!stCurrent) {
+    toast('先选一个角色', true);
+    return;
+  }
+  try {
+    const saved = await invoke('state_save', {
+      state: {
+        ...stCurrent,
+        scene: { name: name || '', text: String(text || '').trim(), since: Date.now() },
+      },
+    });
+    states[saved.characterId] = saved;
+    stCurrent = JSON.parse(JSON.stringify(saved));
+    renderStAll();
+    toast(name ? '场景换成「' + name + '」' : '场景已设置');
+  } catch (e) {
+    fail(e);
+  }
+}
+
+// ── 边界与出戏 ────────────────────────────────────────────────────
+function renderBoundary() {
+  if (!$('sf-avoid')) return;
+  $('sf-avoid').value = cfg.boundariesAvoid || '';
+  $('sf-ooc').value = cfg.oocToken || '';
+  const avoid = String(cfg.boundariesAvoid || '').trim();
+  const tok = String(cfg.oocToken || '').trim();
+  const sub = $('boundary-sub');
+  if (sub) {
+    const bits = [];
+    if (avoid) bits.push('有雷点');
+    if (tok) bits.push('暗号「' + tok + '」');
+    sub.textContent = bits.length ? bits.join(' · ') : '都没配';
+  }
+  const hint = $('boundary-hint');
+  if (hint) {
+    hint.textContent =
+      '雷点进【边界】块（每轮都带，零成本）；暗号只在**这一轮消息**里出现时才触发【出戏】块 —— 打完这一轮她就自动回去继续演。';
+  }
+}
+
 function renderStAll() {
   renderStList();
   renderStSummary();
@@ -1445,6 +1535,8 @@ function renderStAll() {
   $('st-body').checked = cfg.bodyEnabled !== false;
   $('st-user').checked = cfg.userStateEnabled !== false;
   $('sf-idle').value = cfg.proactiveIdleMinutes || 20;
+  renderScene();
+  renderBoundary();
   // 安静时段：空串 = 那一侧没配（跟 Rust 侧一个判据：两侧都配齐才生效）
   $('sf-quiet-from').value = cfg.proactiveQuietFrom === null || cfg.proactiveQuietFrom === undefined ? '' : cfg.proactiveQuietFrom;
   $('sf-quiet-to').value = cfg.proactiveQuietTo === null || cfg.proactiveQuietTo === undefined ? '' : cfg.proactiveQuietTo;
@@ -2343,6 +2435,15 @@ for (const b of document.querySelectorAll('.tb-tab')) {
   b.addEventListener('click', () => setTab(b.dataset.tab));
 }
 $('today-refresh').addEventListener('click', () => refreshToday());
+$('scene-save').addEventListener('click', () => saveScene('', $('sf-scene').value));
+$('scene-clear').addEventListener('click', () => saveScene('', ''));
+// 边界是**配置**（跟场景不一样：场景是角色的状态），所以走 setGate 那条读-改-写队列
+$('sf-avoid').addEventListener('change', (e) => {
+  setGate({ boundariesAvoid: String(e.target.value || '').trim() });
+});
+$('sf-ooc').addEventListener('change', (e) => {
+  setGate({ oocToken: String(e.target.value || '').trim() });
+});
 $('diary-refresh').addEventListener('click', () => {
   // 强制重来：她刚在她那边写完一篇的话，这里得看得见
   diaryLoaded = false;

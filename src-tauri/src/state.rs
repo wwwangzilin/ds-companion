@@ -737,6 +737,12 @@ pub struct CharState {
     /// 上次写日记写的是哪一天（`YYYY-MM-DD`）—— 挡"同一天问第二次"
     #[serde(default)]
     pub last_diary_day: String,
+    /// 我们此刻在哪（背景）。空 = 没设，不注入
+    #[serde(default)]
+    pub scene: Scene,
+    /// 还没发生完的事（伏笔）—— 到期就问一句，问过就忘
+    #[serde(default)]
+    pub pending: Vec<Pending>,
 
     // ── 通路自检的计数器（见 check_vitals）─────────────────────────────
     //
@@ -786,6 +792,8 @@ impl Default for CharState {
             samples: Vec::new(),
             daily: Vec::new(),
             last_diary_day: String::new(),
+            scene: Scene::default(),
+            pending: Vec::new(),
             last_fed_turn: 0,
             flat_turns: 0,
             affinity_stuck_turns: 0,
@@ -1808,6 +1816,227 @@ pub fn want_model_sense(sense_mode: &str, every: u32, s: &CharState, sig: &Signa
     since >= every
 }
 
+// ─────────────────────── 场景（我们此刻在哪） ───────────────────────
+//
+// 【为什么单开一层】原来唯一沾边的是 `arc`（她眼里的当前处境）—— 它混在【状态】里、
+// 只有一行、还带着"她怎么想"的主观色彩。场景是**背景**：在哪、什么时候、什么氛围。
+// 角色扮演的细节全靠它锚定；没有它，她只能在真空里撒娇，三句就开始重复。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Scene {
+    /// 预设名（深夜书房 / 雨天便利店…）；手写的留空
+    pub name: String,
+    /// 一句话：在哪、什么时间、什么氛围
+    pub text: String,
+    /// 什么时候切的（界面上显示"挂了几天"用）
+    pub since: u64,
+}
+
+impl Scene {
+    pub fn is_set(&self) -> bool {
+        !self.text.trim().is_empty()
+    }
+}
+
+/// 【场景】块正文（空串 = 页面不加这个块，零注入）
+pub fn render_scene_block(s: &CharState) -> String {
+    if !s.scene.is_set() {
+        return String::new();
+    }
+    let body = clip_chars(s.scene.text.trim(), 100);
+    let name = s.scene.name.trim();
+    let head = if name.is_empty() {
+        String::new()
+    } else {
+        format!("｜{name}")
+    };
+    // ★标题必须写进正文★：页面那边的 `addBlock(k, text)` **不用 k**（只把它记进注入回执），
+    // 块与块的分界全靠正文自带的【…】。漏了标题，我这几行就会被算进上一块的尾巴里
+    // —— 验收脚本抓到的就是这个（正文在、标题不在）。
+    format!("【场景】{head}\n{body}\n")
+}
+
+// ─────────────────────── 伏笔（还没发生完的事） ───────────────────────
+//
+// 【为什么它不是记忆】记忆是**按关键词检索的过去**；这是**未完成的将来**。
+// 没有它，主人说"我明天面试"，第二天她连去检索那三个字的理由都没有 ——
+// 而"她记得你"和"她记得词"的区别，全在这上面。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Pending {
+    /// 一句话说清是什么事（"面试"）
+    pub what: String,
+    /// 到哪一天该问一句（`YYYY-MM-DD`；页面把"明天/这周"换算成绝对日期再交过来）
+    pub due: String,
+    /// 什么时候记下的（毫秒；GC 用，见 `take_due_pending`）
+    pub made_at: u64,
+    /// 已经问过了吗 —— 问过就不再注入（同一件事追三天，比不问更烦）
+    pub asked: bool,
+}
+
+/// 伏笔保留多久（毫秒）。过期就忘 —— 它不是待办清单，压太久的"后来呢"问出来很怪。
+const PENDING_KEEP_MS: u64 = 14 * 24 * 60 * 60 * 1000;
+/// 一次最多交出去几件（多了她会变成查岗）
+const PENDING_MAX: usize = 3;
+/// 最多留几件没问的（防止状态文件被塞爆）
+const PENDING_CAP: usize = 12;
+
+/// 收一条伏笔（同一件事只留一条）。
+pub fn add_pending(s: &mut CharState, what: &str, due: &str, now: u64) {
+    let w = clip_chars(what.trim(), 60);
+    // 日期形状不对就丢：它要参与"到没到日子"的比较，脏值会让比较失去意义
+    if w.is_empty() || !is_day_shape(due) {
+        return;
+    }
+    if s.pending.iter().any(|p| p.what == w) {
+        return;
+    }
+    if s.pending.len() >= PENDING_CAP {
+        s.pending.remove(0);
+    }
+    s.pending.push(Pending {
+        what: w,
+        due: due.to_string(),
+        made_at: now,
+        asked: false,
+    });
+}
+
+/// 到期的伏笔（顺手**标记为已问**，并清掉过期的）。
+///
+/// 【为什么"取"的时候就标记】取出来 = 马上就要注进上下文 = 她知道了。
+/// 不标记的话同一件事会连着问好几天。过期与已问的一律扔掉：伏笔不是待办清单。
+pub fn take_due_pending(s: &mut CharState, today: &str, now: u64) -> Vec<String> {
+    s.pending
+        .retain(|p| !p.asked && now.saturating_sub(p.made_at) <= PENDING_KEEP_MS);
+    if !is_day_shape(today) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for p in s.pending.iter_mut() {
+        if out.len() >= PENDING_MAX {
+            break;
+        }
+        // `YYYY-MM-DD` 的字典序就是日期序 —— 不必把日期解析成数字
+        if p.due.as_str() <= today {
+            p.asked = true;
+            out.push(p.what.clone());
+        }
+    }
+    out
+}
+
+/// 只看一眼到期的伏笔，**不标记**（主动开口那条链用：她最后可能没说出来）
+pub fn peek_due_pending(s: &CharState, today: &str) -> Vec<String> {
+    if !is_day_shape(today) {
+        return Vec::new();
+    }
+    s.pending
+        .iter()
+        .filter(|p| !p.asked && p.due.as_str() <= today)
+        .take(PENDING_MAX)
+        .map(|p| p.what.clone())
+        .collect()
+}
+
+/// 把某件伏笔标记成"问过了"（她**真的开口说了**之后才调 —— 没说出口就不该丢掉）
+pub fn mark_pending_asked(s: &mut CharState, what: &str) -> bool {
+    let w = what.trim();
+    if w.is_empty() {
+        return false;
+    }
+    let mut hit = false;
+    for p in s.pending.iter_mut() {
+        if p.what == w {
+            p.asked = true;
+            hit = true;
+        }
+    }
+    hit
+}
+
+/// 【待回访】块正文（空串 = 不加这个块）
+pub fn render_pending_block(items: &[String]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("【待回访】\n主人之前提过、现在该问一句的事（挑最自然的一件，别罗列、别硬塞）：\n");
+    for w in items {
+        out.push_str(&format!("· {w}\n"));
+    }
+    out
+}
+
+// ─────────────────────── 关系阶段（她该怎么说话） ───────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    New,
+    Familiar,
+    Close,
+    Intimate,
+}
+
+impl Stage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Stage::New => "刚认识",
+            Stage::Familiar => "熟起来了",
+            Stage::Close => "亲近",
+            Stage::Intimate => "很亲密",
+        }
+    }
+
+    /// 这一档该怎么说话（一行，注入用）
+    pub fn tone(self) -> &'static str {
+        match self {
+            Stage::New => "客气一点、别自来熟；称呼规矩些，别急着撒娇。",
+            Stage::Familiar => "可以开玩笑、可以有情绪了，但还别越界。",
+            Stage::Close => "会主动关心、会占一点小便宜、会嘴硬但其实舍不得走。",
+            Stage::Intimate => "撒娇、护短，默认「我们会一直这样」；可以提只有你们俩懂的事。",
+        }
+    }
+}
+
+/// 关系阶段：好感 / 认识天数 / 轮数**三者都到**才算数。
+///
+/// 【为什么三条一起看】只看好感，刚认识就飙到 80 会显得便宜；只看天数，
+/// 认识三年但只聊过两句也不该像老夫老妻。取交集是**刻意保守**：
+/// 宁可慢一档，也别让她在第二天就摆出老夫老妻的姿态（那最出戏）。
+pub fn relation_stage(affinity: u8, days: u32, turns: u32) -> Stage {
+    if affinity >= 80 && days >= 30 && turns >= 300 {
+        Stage::Intimate
+    } else if affinity >= 60 && days >= 10 && turns >= 100 {
+        Stage::Close
+    } else if affinity >= 42 && days >= 3 && turns >= 20 {
+        Stage::Familiar
+    } else {
+        Stage::New
+    }
+}
+
+/// 【关系】块正文（空串 = 不加这个块）。`address` 为空就只说阶段。
+pub fn render_relation_block(s: &CharState, address: &str, now: u64) -> String {
+    let days = days_together(s, now).max(1);
+    // days_together 给的是 u64（天数是从认识那天起算的），关系阶段按 u32 比 —— 夹一下
+    let stage = relation_stage(s.affinity, days.min(u32::MAX as u64) as u32, s.turns);
+    let mut out = format!(
+        "【关系】\n第 {} 天 · {} · 好感 {}/100",
+        days,
+        stage.label(),
+        s.affinity
+    );
+    let a = address.trim();
+    if !a.is_empty() {
+        out.push_str(&format!(" · 她叫你「{}」", clip_chars(a, 16)));
+    }
+    out.push('\n');
+    out.push_str(stage.tone());
+    out.push('\n');
+    out
+}
+
 // ─────────────────────── 模型感知的结果（B 链路回传） ───────────────────────
 
 /// 让模型判断情绪时，它要按这个形状回（页面侧 sense.js 解析后交回来）。
@@ -1828,6 +2057,22 @@ pub struct ModelSense {
     pub anchors: Vec<String>,
     /// 0..1 模型自己觉得这次判断有多可靠（低就少动状态）
     pub confidence: Option<f32>,
+    /// 这次对话里冒出来的"还没发生完的事"（可选，最多一件）
+    pub followup: Option<Followup>,
+}
+
+/// 模型从对话里认出的一件伏笔。
+///
+/// 【为什么日期由页面算】模型只该给**粗档**（今天/明天/这周），绝对日期由页面按本地
+/// 日历换算 —— 让模型直接吐 `2026-10-05` 它十有八九会算错，而"哪天"是本项目的
+/// 老规矩：**日期一律由页面报**（`std` 只有 UTC，壳自己算会差一天）。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Followup {
+    /// 一句话说清是什么事（"面试"）
+    pub what: String,
+    /// 绝对日期 `YYYY-MM-DD`（页面换算好的）
+    pub due: String,
 }
 
 /// 把模型判断并进状态。故意做得比 apply_turn **更保守**：
@@ -1864,6 +2109,9 @@ pub fn apply_model_sense(state: &mut CharState, m: &ModelSense, now: u64) {
         if !state.anchors.iter().any(|x| x == &t) {
             state.anchors.push(t);
         }
+    }
+    if let Some(f) = &m.followup {
+        add_pending(state, &f.what, &f.due, now);
     }
     state.last_sense_turn = state.turns;
     state.updated_at = now;
@@ -1998,6 +2246,188 @@ mod tests {
         assert!(!quiet_now(Some(23), Some(25), 3), "越界的小时当没配");
         // 页面报上来脏值也要兜住（不能算出个莫名其妙的结果）
         assert!(quiet_now(Some(23), Some(8), 25), "25 点 ≡ 1 点，仍在安静时段");
+    }
+
+    // ── 关系阶段 ──────────────────────────────────────────────────
+
+    /// 三样都到才升档；**只满足其中一两样绝不跳档**（那是最出戏的一种）。
+    #[test]
+    fn relation_stage_needs_all_three() {
+        assert_eq!(relation_stage(30, 1, 0), Stage::New, "刚认识");
+        // 只有好感高
+        assert_eq!(relation_stage(100, 1, 0), Stage::New, "刚认识就 100 好感也不该熟络");
+        // 只有天数
+        assert_eq!(relation_stage(30, 400, 0), Stage::New, "认识三年但没聊过");
+        // 只有轮数
+        assert_eq!(relation_stage(30, 1, 900), Stage::New, "一天聊 900 轮也还是刚认识");
+        // 三样都到
+        assert_eq!(relation_stage(42, 3, 20), Stage::Familiar);
+        assert_eq!(relation_stage(60, 10, 100), Stage::Close);
+        assert_eq!(relation_stage(80, 30, 300), Stage::Intimate);
+    }
+
+    /// 阶段只升不降（好感不会掉到 0，天数只会涨），且每档都有话术。
+    #[test]
+    fn relation_stage_advances_and_has_tone() {
+        let mut last = relation_stage(0, 0, 0);
+        for (a, d, t) in [(42, 3, 20), (60, 10, 100), (80, 30, 300)] {
+            let s = relation_stage(a, d, t);
+            assert!(s != last, "{a}/{d}/{t} 该升档");
+            last = s;
+        }
+        for s in [Stage::New, Stage::Familiar, Stage::Close, Stage::Intimate] {
+            assert!(!s.label().is_empty());
+            assert!(!s.tone().is_empty());
+            assert!(s.tone().chars().count() <= 60, "话术要短：{}", s.tone());
+        }
+    }
+
+    /// 关系块：带上第几天/阶段/好感，有称呼才写称呼。
+    #[test]
+    fn relation_block_mentions_address_only_when_given() {
+        let mut s = CharState::default();
+        s.first_seen_at = 1_000_000_000_000;
+        let now = s.first_seen_at + 4 * 24 * 60 * 60 * 1000;
+        let with = render_relation_block(&s, "主人", now);
+        assert!(with.contains("第 5 天"), "{with}");
+        assert!(with.contains("主人"), "{with}");
+        assert!(with.contains("好感 30/100"), "{with}");
+        let without = render_relation_block(&s, "  ", now);
+        assert!(!without.contains("叫你"), "没配称呼就别编一个：{without}");
+    }
+
+    // ── 场景 ──────────────────────────────────────────────────────
+
+    /// 没设场景 = 零注入（一个空块都不该往提示词里塞）。
+    #[test]
+    fn scene_block_is_empty_when_unset() {
+        let mut s = CharState::default();
+        assert_eq!(render_scene_block(&s), "");
+        s.scene.text = "    ".into();
+        assert_eq!(render_scene_block(&s), "", "只有空白也算没设");
+        s.scene.text = "凌晨一点的厨房".into();
+        assert!(render_scene_block(&s).contains("凌晨一点的厨房"));
+        s.scene.name = "深夜书房".into();
+        let named = render_scene_block(&s);
+        assert!(named.starts_with("【场景】"), "块标题必须在正文里：{named}");
+        assert!(named.contains("｜深夜书房"), "预设名也要看得见：{named}");
+    }
+
+    /// 场景太长要截断 —— 它是背景，不该把提示词吃掉一半。
+    #[test]
+    fn scene_block_clips_long_text() {
+        let mut s = CharState::default();
+        s.scene.text = "啊".repeat(500);
+        let out = render_scene_block(&s);
+        // 100 字正文 + 【场景】 + 换行
+        assert!(out.chars().count() <= 115, "{}", out.chars().count());
+    }
+
+    // ── 伏笔 ──────────────────────────────────────────────────────
+
+    /// 没到日子不问；到日子且当天问。
+    #[test]
+    fn pending_fires_on_or_after_due_day() {
+        let mut s = CharState::default();
+        add_pending(&mut s, "面试", "2026-10-05", 0);
+        assert!(take_due_pending(&mut s, "2026-10-04", 0).is_empty(), "还没到日子");
+        assert!(peek_due_pending(&s, "2026-10-04").is_empty());
+        assert_eq!(peek_due_pending(&s, "2026-10-05"), vec!["面试"], "当天就该问");
+        assert_eq!(take_due_pending(&mut s, "2026-10-06", 0), vec!["面试"], "过了一天照样该问");
+    }
+
+    /// ★问过就不再问★（同一件事追问三天比不问更烦）。
+    #[test]
+    fn pending_is_asked_only_once() {
+        let mut s = CharState::default();
+        add_pending(&mut s, "面试", "2026-10-05", 0);
+        assert_eq!(take_due_pending(&mut s, "2026-10-05", 0).len(), 1);
+        assert!(take_due_pending(&mut s, "2026-10-05", 0).is_empty(), "第二轮不该再给");
+        assert!(take_due_pending(&mut s, "2026-10-09", 0).is_empty(), "过了几天也别回头问");
+        assert!(s.pending.is_empty(), "问过的该被清掉，不留垃圾");
+    }
+
+    /// 去重 / 脏日期不收 / 数量有上限。
+    #[test]
+    fn pending_dedupes_and_rejects_junk() {
+        let mut s = CharState::default();
+        add_pending(&mut s, "面试", "2026-10-05", 0);
+        add_pending(&mut s, "面试", "2026-10-09", 0);
+        assert_eq!(s.pending.len(), 1, "同一件事只留一条");
+        add_pending(&mut s, "体检", "下周三", 0);
+        assert_eq!(s.pending.len(), 1, "日期形状不对就不收（它要参与比较）");
+        add_pending(&mut s, "  ", "2026-10-09", 0);
+        assert_eq!(s.pending.len(), 1, "空的不收");
+        for i in 0..40 {
+            add_pending(&mut s, &format!("事{i}"), "2026-10-09", 0);
+        }
+        assert!(s.pending.len() <= 12, "数量要封顶：{}", s.pending.len());
+    }
+
+    /// 压太久的伏笔过期就忘（它不是待办清单）。
+    #[test]
+    fn pending_forgets_stale_items() {
+        let mut s = CharState::default();
+        let now = 1_700_000_000_000u64;
+        add_pending(&mut s, "面试", "2026-10-05", now);
+        // 15 天后再取：直接扔掉，不再注入
+        assert!(take_due_pending(&mut s, "2026-10-05", now + 15 * 24 * 60 * 60 * 1000).is_empty());
+        assert!(s.pending.is_empty());
+    }
+
+    /// 一次最多交出去 3 件（多了她会变成查岗）。
+    #[test]
+    fn pending_caps_what_is_handed_out() {
+        let mut s = CharState::default();
+        for i in 0..5 {
+            add_pending(&mut s, &format!("事{i}"), "2026-10-05", 0);
+        }
+        let got = take_due_pending(&mut s, "2026-10-05", 0);
+        assert_eq!(got.len(), 3, "一次最多三件：{got:?}");
+        let asked = s.pending.iter().filter(|p| p.asked).count();
+        assert_eq!(asked, 3, "★只有交出去的那三件才算问过★");
+        assert_eq!(s.pending.len(), 5, "剩下的两件要留着 —— 封顶不该吃掉伏笔");
+        assert_eq!(
+            take_due_pending(&mut s, "2026-10-05", 0).len(),
+            2,
+            "下一轮把那两件交出去"
+        );
+    }
+
+    /// 主动开口那条链只"看一眼"，不标记 —— 她最后可能没说出口。
+    #[test]
+    fn peek_does_not_consume() {
+        let mut s = CharState::default();
+        add_pending(&mut s, "面试", "2026-10-05", 0);
+        assert_eq!(peek_due_pending(&s, "2026-10-05").len(), 1);
+        assert_eq!(peek_due_pending(&s, "2026-10-05").len(), 1, "看几次都还在");
+        assert!(!s.pending[0].asked);
+        // 真说出来了才标记
+        assert!(mark_pending_asked(&mut s, "面试"));
+        assert!(!mark_pending_asked(&mut s, "别的"));
+        assert!(peek_due_pending(&s, "2026-10-05").is_empty());
+    }
+
+    /// 日期报成空串/脏值时，整条链不炸、也不乱问。
+    #[test]
+    fn pending_needs_a_valid_today() {
+        let mut s = CharState::default();
+        add_pending(&mut s, "面试", "2026-10-05", 0);
+        assert!(take_due_pending(&mut s, "", 0).is_empty());
+        assert!(take_due_pending(&mut s, "今天", 0).is_empty());
+        assert!(peek_due_pending(&s, "").is_empty());
+        assert_eq!(s.pending.len(), 1, "坏日期不该把伏笔弄丢");
+    }
+
+    /// 待回访块：空列表 = 零注入；有料时带上"别罗列"的约束。
+    #[test]
+    fn pending_block_shape() {
+        assert_eq!(render_pending_block(&[]), "");
+        let out = render_pending_block(&["面试".into(), "体检".into()]);
+        assert!(out.contains("面试") && out.contains("体检"), "{out}");
+        assert!(out.contains("别罗列"), "她得知道别一口气全倒出来：{out}");
+        assert!(out.starts_with("【待回访】"), "标题要自带：{out}");
+        assert!(out.lines().count() <= 5, "{out}");
     }
 
     fn sig(v: f32, a: f32, i: f32) -> Signal {
@@ -2993,6 +3423,7 @@ mod tests {
             arc: "主人在做状态层".into(),
             anchors: vec!["叫主人「主人」".into()],
             confidence: Some(1.0),
+            followup: None,
         };
         apply_model_sense(&mut s, &m, 1_000_000);
         assert!((s.valence - 1.0).abs() < 1e-6, "confidence=1 时直接采纳：{}", s.valence);

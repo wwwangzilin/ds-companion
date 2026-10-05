@@ -30,6 +30,15 @@ pub struct Persona {
     /// 人设正文（注入时拼在用户消息前面）
     #[serde(default)]
     pub body: String,
+    /// **她怎么称呼主人**（"主人"/名字/外号…）。空 = 不提，由人设正文自己定。
+    ///
+    /// 【为什么单独一栏】原来这个信息只活在正文里（`你是「露娜」，口头禅是「杂鱼」…`），
+    /// 想换个称呼就得改人设正文、还可能把别的设定碰坏。它跟「关系阶段」是一对：
+    /// 阶段决定**语气**，称呼决定**怎么叫**，两者一起进【关系】块。
+    ///
+    /// 注意它**不是** `call_names` 那个东西 —— 那个答的是"怎么叫她"。
+    #[serde(default)]
+    pub address: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -337,6 +346,7 @@ fn parse_persona_md(text: &str) -> Option<Persona> {
     let mut name = String::new();
     let mut description = String::new();
     let mut source = String::new();
+    let mut address = String::new();
     for line in lines.by_ref() {
         if line.trim() == "---" {
             break;
@@ -348,6 +358,7 @@ fn parse_persona_md(text: &str) -> Option<Persona> {
                 "name" => name = v,
                 "description" => description = v,
                 "source" => source = v,
+                "address" => address = v,
                 _ => {}
             }
         }
@@ -357,6 +368,7 @@ fn parse_persona_md(text: &str) -> Option<Persona> {
         return None;
     }
     Some(Persona {
+        address,
         id,
         name: if name.is_empty() { "未命名".into() } else { name },
         description,
@@ -365,10 +377,16 @@ fn parse_persona_md(text: &str) -> Option<Persona> {
     })
 }
 
+/// 存成人设文件（frontmatter + 正文）。
+///
+/// 【★加字段必须同时改这里和 `parse_persona_md`★】这两处是手写的，不是 serde 自动的 ——
+/// 新字段只要漏在这张清单里，就会"界面上填得进去、存下去就没了"，而且**一声不响**。
+/// `address`（她怎么称呼主人）就是这么丢过一次的：验收脚本填了「主人」、关系块里却没有，
+/// 一路查到这儿才发现。所以下面那条 `frontmatter_keeps_every_field` 用**非空值**挨个比对。
 fn render_persona_md(p: &Persona) -> String {
     format!(
-        "---\nid: {}\nname: {}\ndescription: {}\nsource: {}\n---\n{}\n",
-        p.id, p.name, p.description, p.source, p.body
+        "---\nid: {}\nname: {}\ndescription: {}\nsource: {}\naddress: {}\n---\n{}\n",
+        p.id, p.name, p.description, p.source, p.address, p.body
     )
 }
 
@@ -398,6 +416,7 @@ pub fn builtin_persona() -> Persona {
         return p;
     }
     parse_persona_md(BUILTIN_MD).unwrap_or_else(|| Persona {
+        address: String::new(),
         id: BUILTIN_ID.into(),
         name: "DeepSeek 娘".into(),
         description: String::new(),
@@ -538,6 +557,12 @@ pub fn save_persona(persona: &Persona) -> Result<Persona, String> {
         persona.source.clone()
     };
     let saved = Persona {
+        // ★这里必须**透传**主人的输入，不能是 `String::new()`★
+        //
+        // 【为什么单独写一句】这个字面量是"保存的真相"：写成空串就等于
+        // "界面上填得进去、存下去就没了"。而批量补字段的脚本补出来的正是空串 ——
+        // 它只保证"字段在"（编译过），不保证值对。验收脚本抓到的就是这一处。
+        address: persona.address.trim().to_string(),
         id: id.clone(),
         name: persona.name.trim().to_string(),
         description: persona.description.trim().to_string(),
@@ -703,6 +728,7 @@ pub fn import_dsh_preset(preset_id: &str) -> Result<Persona, String> {
         .map_err(|e| e.to_string())?;
     let body = extract_persona_prefix(&cordis).ok_or_else(|| "这个人设行没有 prefix".to_string())?;
     let persona = Persona {
+        address: String::new(),
         id: format!("dsh-{}", safe_id(&preset.id)),
         name: preset.name.clone(),
         description: preset.description.clone(),
@@ -723,6 +749,32 @@ mod tests {
             extract_persona_prefix(yaml).unwrap(),
             "第一行\n\n第二行"
         );
+    }
+
+    /// ★存盘/读回一个字段都不能丢★（`address` 就是被漏掉过一次的那个）。
+    ///
+    /// 【为什么必须用非空值】第一版这条测试（frontmatter_roundtrip）用的是
+    /// `address: String::new()` —— 空值丢不丢都一样，所以它绿着，bug 活着。
+    /// 存盘清单是手写的，这类"新字段没进清单"的错只能靠**逐字段非空比对**抓住。
+    #[test]
+    fn frontmatter_keeps_every_field() {
+        let p = Persona {
+            id: "p-verify".into(),
+            name: "露娜".into(),
+            description: "小恶魔".into(),
+            source: "manual".into(),
+            address: "主人".into(),
+            body: "你是「露娜」，一个……".into(),
+        };
+        let md = render_persona_md(&p);
+        assert!(md.contains("address: 主人"), "frontmatter 里得有 address：\n{md}");
+        let back = parse_persona_md(&md).expect("该能读回来");
+        assert_eq!(back.address, "主人", "★address 丢了★");
+        assert_eq!(back.id, "p-verify");
+        assert_eq!(back.name, "露娜");
+        assert_eq!(back.description, "小恶魔");
+        assert_eq!(back.source, "manual");
+        assert_eq!(back.body, "你是「露娜」，一个……");
     }
 
     /// 回归：persona 行**不在**第一行时必须照样能扫到。
@@ -797,6 +849,7 @@ mod tests {
     #[test]
     fn frontmatter_roundtrip() {
         let p = Persona {
+            address: String::new(),
             id: "x".into(),
             name: "名字".into(),
             description: "描述".into(),

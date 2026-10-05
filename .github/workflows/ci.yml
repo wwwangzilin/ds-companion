@@ -1,6 +1,6 @@
 # CI：推 main 或开 PR 就跑门禁。
 #
-# 【为什么要它】这个仓库有 180+ 个 Rust 单测 + 5 份注入脚本单测（tools/test-*.cjs），
+# 【为什么要它】这个仓库有 200+ 个 Rust 单测 + 6 份注入脚本单测（tools/test-*.cjs），
 # 但一直**没有任何东西逼着它们跑** —— 回归只能靠人记得手动敲。实测教训：SSE 解析
 # 那 9 项断言里有一半长期是红的，而没人知道（`parseSseText` 的增量路径真的丢了正文，
 # 表现是"空回复"，日志里连个错都没有）。门禁的价值就在这儿。
@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: '20'
 
-      # 这几份是纯 node 脚本（不需要 npm install：注入脚本是手写的 ES5 风格 JS，
+      # 这几份都是纯 node 脚本（不需要 npm install：注入脚本是手写的 ES5 风格 JS，
       # 用 module.exports 收尾就是为了能被 node 直接 require 进来测）
       - name: 注入脚本单测
         shell: pwsh
@@ -51,6 +51,8 @@ jobs:
           node tools/test-tools.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node tools/test-diary.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tools/test-followup.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # 单测绿不等于能出 exe（比如 tauri-build / 前端资源嵌入这一环单测碰不到）

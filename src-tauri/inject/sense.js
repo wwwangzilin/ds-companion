@@ -40,10 +40,37 @@
     return {};
   }
 
+  /** 本地日期 `YYYY-MM-DD`。
+   *
+   * 【为什么兜底也必须补零】原来这里是 `getMonth()+1` 直接拼 —— 十月三日会拼出
+   * `2026-10-3`（9 位）。页面里走的是 inject.js 那个会补零的版本，所以线上看着没事；
+   * 但**只要 `__DSC_LOCAL_DAY__` 不在**（脚本加载顺序、验收脚本单独 require 这个文件），
+   * 壳里的 `is_day_shape`（要求 10 位）就会把它当坏日期丢掉 —— 按天的聚合、伏笔的
+   * 到期日会一起静默失效。这种"只有换环境才现形"的日期格式，一律补零。
+   */
   function localDay() {
     if (typeof root.__DSC_LOCAL_DAY__ === 'function') return root.__DSC_LOCAL_DAY__();
     var d = new Date();
-    return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+    var p = function (x) {
+      return (x < 10 ? '0' : '') + x;
+    };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  /** `YYYY-MM-DD` 加 n 天（伏笔的到期日就是这么出来的）。
+   *
+   * 【为什么用本地构造】`new Date('2026-10-05')` 会当成 UTC 零点解析，本机 UTC+8 ——
+   * 拿它取日期在晚上会差一天。走 `new Date(y, m-1, d+n)` 才是本地日历。
+   */
+  function addDays(day, n) {
+    // 月/日允许一位数：本地日历从别处过来时可能是 `2026-10-3` 这种没补零的
+    var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(day == null ? '' : day));
+    if (!m) return '';
+    var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + Number(n || 0));
+    var p = function (x) {
+      return (x < 10 ? '0' : '') + x;
+    };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
   }
 
   function clip(text, max) {
@@ -128,8 +155,12 @@
       '4. arc 一句话说清"她眼里的当前处境"（不超过 30 字）；没新信息就留空字符串。',
       '5. anchors 最多 2 条新发现的、值得长期遵守的约定（如称呼、雷区）；没有就给空数组。',
       '6. confidence（0 到 1）你对这次判断有多有把握。',
+      '7. followup（可选，最多一件）主人提到了**一件还没发生完的事**（明天要面试、这周要体检、下周搬家）时填：',
+      '   {"what":"面试","when":"tomorrow"}；when 只能是 today / tomorrow / this_week / later 四个粗档之一。',
+      '   **别自己算日期**（绝对日期由程序换算）；没有这种事就给 null。',
+      '   只填真正值得回头问一句的：日常琐事（「我一会儿去吃饭」）不算。',
       '只输出 JSON，不要解释、不要 markdown 代码块：',
-      '{"valence":0.4,"arousal":0.6,"affinityDelta":1,"mood":"雀跃","arc":"主人在忙状态层","anchors":[],"confidence":0.7}',
+      '{"valence":0.4,"arousal":0.6,"affinityDelta":1,"mood":"雀跃","arc":"主人在忙状态层","anchors":[],"confidence":0.7,"followup":{"what":"面试","when":"tomorrow"}}',
     ]
       .filter(function (l) {
         return l !== '';
@@ -176,12 +207,23 @@
         .slice(0, 2);
     }
     if (obj.confidence !== undefined) out.confidence = clamp(obj.confidence, 0, 1, 0.6);
+    // 伏笔：模型只给**粗档**，绝对日期在这里算 —— 页面才知道本地日期（壳只有 UTC，
+    // 自己算会差一天；这也是"哪天由页面报"那条老规矩的延伸）。
+    if (obj.followup && typeof obj.followup === 'object') {
+      var what = clip(obj.followup.what, 60);
+      var when = String(obj.followup.when == null ? '' : obj.followup.when).trim().toLowerCase();
+      var plus = { today: 0, tomorrow: 1, this_week: 3, later: 10 }[when];
+      if (what && plus !== undefined) {
+        out.followup = { what: what, due: addDays(localDay(), plus) };
+      }
+    }
     if (
       out.valence === undefined &&
       out.arousal === undefined &&
       out.affinityDelta === undefined &&
       !out.mood &&
-      !out.arc
+      !out.arc &&
+      !out.followup
     ) {
       throw new Error('模型回的 JSON 里没有任何可用字段');
     }
@@ -213,8 +255,9 @@
   }
 
   // ── 空闲主动（mode=model 时才走这里） ───────────────────────────
-  function buildProactivePrompt() {
+  function buildProactivePrompt(pending) {
     var s = cfg();
+    var ask = (pending || []).slice(0, 2);
     var st = s.state || {};
     var turns = recentTurns(4);
     var last = turns.length ? turns[turns.length - 1] : null;
@@ -229,12 +272,17 @@
       st.arc ? '你心里惦记的事：' + st.arc : '',
       last ? '上次聊到：用户说「' + clip(last.user, 150) + '」' : '（你们还刚开始聊）',
       '现在时间：' + new Date().getHours() + ' 点',
+      ask.length
+        ? '★该问一句了：' + ask.join('；') +
+          '（主人之前提过这些事，现在到了该问的时候 —— 自然地问一句，像记着这回事，别像查岗）'
+        : '',
       '',
       '要求：',
       '1. 一到两句，像微信里突然发来的消息，不要客套开场白。',
       '2. 要像她本人（语气、称呼都要符合人设），可以带一点撒娇/关心/小抱怨，看状态定。',
       '3. 不要复述状态数字，不要说"根据状态显示"。',
       '4. 只输出这句话本身，不要引号、不要解释。',
+      '5. 如果上面有「★该问一句了」，**优先**把它自然地放进这句话里。',
     ]
       .filter(function (l) {
         return l !== '';
@@ -242,8 +290,8 @@
       .join('\n');
   }
 
-  async function proactiveLine() {
-    var prompt = buildProactivePrompt();
+  async function proactiveLine(pending) {
+    var prompt = buildProactivePrompt(pending);
     var r = await ask(prompt);
     var text = String(r.text || '')
       .replace(/^["'「『]|["'」』]$/g, '')
@@ -519,6 +567,7 @@
   };
 
   root.__DSC_SENSE_UTIL__ = {
+    addDays: addDays,
     buildSensePrompt: buildSensePrompt,
     buildTaskPrompt: buildTaskPrompt,
     parseTask: parseTask,
@@ -540,8 +589,8 @@
       return { ok: false, error: msg };
     });
   };
-  root.__DSC_PROACTIVE_LINE__ = function () {
-    return proactiveLine().catch(function (e) {
+  root.__DSC_PROACTIVE_LINE__ = function (pending) {
+    return proactiveLine(pending).catch(function (e) {
       var msg = String((e && e.message) || e);
       log('PROACTIVE-LINE FAILED: ' + msg);
       // 【不只是打日志】"她会自己开口"是这个产品最像活人的机制，而它以前**静默失败**：

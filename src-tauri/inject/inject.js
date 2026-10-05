@@ -295,6 +295,16 @@
     addBlock('回锚', anchor ? anchor + '\n' : '');
     var mem = memoryBlock(body);
     addBlock('回忆', mem ? mem + '\n' : '');
+    // ── 角色扮演层（都来自壳，空就不加）──────────────────────────────
+    // 【为什么场景要单开一块】它和【状态】答的是两个问题：状态是"她此刻什么感觉"，
+    // 场景是"我们此刻在哪"。混在一起模型会把背景当情绪读。
+    addBlock('场景', TURN.scene);
+    addBlock('关系', TURN.relation);
+    addBlock('待回访', TURN.pending);
+    addBlock('边界', boundaryText());
+    // ★参数名是 `rawText`（augment 的形参），不是 rawBody★ —— 写成 rawBody 会让
+    // augment 每轮抛 ReferenceError，而这等于**整条注入链断掉**（比少注一块严重得多）。
+    addBlock('出戏', oocText(rawText));
 
     if (!prefix) {
       stats.skipped++;
@@ -629,6 +639,11 @@
         CFG.taskMode = !!r.taskMode;
         CFG.taskText = r.taskText || '';
         CFG.taskSignal = r.taskSignal || null;
+        // 角色扮演那三块：壳算好带回来，页面下一轮贴上去（空串 = 不加那块）。
+        // 存进 TURN 而不是 CFG —— CFG 会被 push_config 整份换掉（见上面 TURN 的说明）。
+        TURN.scene = r.sceneText || '';
+        TURN.relation = r.relationText || '';
+        TURN.pending = r.pendingText || '';
         // 本地判定贴着门槛 → 请模型再判一次，结果覆盖本地。只影响**下一轮**的注入
         //（本轮请求早发出去了，这也是任务模式本来的粒度）。
         if (r.wantTaskJudge) judgeTaskIntent(userText);
@@ -704,6 +719,13 @@
   //
   // 主人不说话的时候，她可以自己开口。默认关闭（可能花额度），
   // 开着时 Rust 那边还有当日额度闸；这里只负责"多久算空闲"和怎么显示。
+  // 每轮由 turn_report 带回来的三块文本。
+  //
+  // 【为什么不能塞进 CFG】`push_config` 一来就是**整份换掉** CFG（配置一变就推一份新的），
+  // 那三个字段不在 payload 里，会被一起冲成 undefined —— 实测就是这么丢的：刚拿到
+  // 场景/关系，一改配置（比如设个雷点）它们就没了，而界面上什么异常都看不到。
+  var TURN = { scene: '', relation: '', pending: '' };
+
   var lastActivityAt = Date.now();
   var proactiveFiredForIdle = false;
   var sayTimer = null;
@@ -755,6 +777,11 @@
         }
         if (r.source === 'local') {
           say(r.text, false);
+          // 本地话术里已经把伏笔补进去了 —— 她说出口了，标一下
+          // （不标的话下一轮还会提同一件事）
+          if (r.pending && r.pending.length) {
+            invoke('dsc_proactive_done', { text: r.text, pending: r.pending[0] }).catch(function () {});
+          }
           return;
         }
         // model 模式：额度已经在壳那边扣过了，这里自己生成一句
@@ -763,11 +790,14 @@
           return;
         }
         window
-          .__DSC_PROACTIVE_LINE__()
+          .__DSC_PROACTIVE_LINE__(r.pending || [])
           .then(function (text) {
             if (!text) return;
             say(text, true);
-            invoke('dsc_proactive_done', { text: text }).catch(function () {});
+            invoke('dsc_proactive_done', {
+              text: text,
+              pending: (r.pending && r.pending[0]) || null,
+            }).catch(function () {});
           })
           ['catch'](function (e) {
             log('PROACTIVE model 失败 ' + e);
@@ -784,6 +814,36 @@
     var t = CFG.proactiveQuietTo;
     if (f === null || f === undefined || t === null || t === undefined) return '';
     return f + ' → ' + t + ' 点';
+  }
+
+  /** 【边界】块：主人给她划的雷点。没配就是空串（零注入）。 */
+  function boundaryText() {
+    var avoid = String(CFG.boundariesAvoid || '').trim();
+    if (!avoid) return '';
+    // 标题自带（addBlock 不用 key，分界全靠这个【…】）
+    return (
+      '【边界】\n这些是主人的雷点，**别主动提起**（他自己先说了才谈）：' +
+      avoid.replace(/[\r\n]+/g, '、') +
+      '\n'
+    );
+  }
+
+  /** 【出戏】块：主人这一轮打了暗号，就当他在跟"你本人"说话。
+   *
+   * 【为什么只在末尾找】请求体里带着整段会话（历史也在）。拿整段去找，会把
+   * "几轮之前打过一次暗号"也算成这一轮 —— 只看最后 600 字，也就是这一轮消息那一带。
+   */
+  function oocText(rawBody) {
+    var tok = String(CFG.oocToken || '').trim();
+    if (!tok) return '';
+    var tail = String(rawBody == null ? '' : rawBody).slice(-600);
+    if (tail.indexOf(tok) < 0) return '';
+    return (
+      '【出戏】\n主人这一轮用了出戏暗号「' +
+      tok +
+      '」：他在跟**你本人**说话，不是跟角色说话。用你自己的身份、平实的话如实回答，' +
+      '别演、别撒娇、别用角色的口吻；回答完这一轮就回去继续演。\n'
+    );
   }
 
   function checkIdle() {

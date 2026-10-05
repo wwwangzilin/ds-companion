@@ -51,7 +51,7 @@ jobs:
       - name: 注入脚本单测
         shell: pwsh
         run: |
-          foreach ($t in 'test-selector.cjs','test-extract.cjs','test-sse.cjs','test-tools.cjs','test-diary.cjs') {
+          foreach ($t in 'test-selector.cjs','test-extract.cjs','test-sse.cjs','test-tools.cjs','test-diary.cjs','test-followup.cjs') {
             node "tools/$t"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }

@@ -347,6 +347,12 @@ struct TurnReport {
     ///
     /// 只在「今天还没写过、且有个更早的日子可以回顾」时给一次，见 `diary::pick_day`。
     diary: Option<DiaryAsk>,
+    /// 【场景】块正文（空 = 这一轮不加）—— 背景：我们此刻在哪
+    scene_text: String,
+    /// 【关系】块正文（空 = 不加）—— 第几天、什么阶段、她怎么叫你、这一档该怎么说话
+    relation_text: String,
+    /// 【待回访】块正文（空 = 不加）—— 到点了的伏笔
+    pending_text: String,
     /// 通路自检的告警（空 = 没看出问题）。
     ///
     /// 【为什么要跟着每轮回来】"机制没坏、通路断了"这类问题（情绪冻结、饿着没人管）
@@ -477,6 +483,9 @@ fn dsc_turn_report(
             task_signal: state::TaskSignal::default(),
             want_task_judge: false,
             diary: None,
+            scene_text: String::new(),
+            relation_text: String::new(),
+            pending_text: String::new(),
             vitals: Vec::new(),
         };
     }
@@ -508,6 +517,9 @@ fn dsc_turn_report(
     // 工作态下不主动花额度做模型感知 —— 干活时来一句"你是不是心情不好"最碍事
     let want =
         !task_mode && state::want_model_sense(&cfg.sense_mode, cfg.sense_every_turns, &st, &sig);
+    // 待回访：到期的伏笔在这一轮就交出去，并**当场标记"问过了"**。
+    // 标记必须发生在 save 之前，否则下一轮会把同一件事再注一遍 —— 追问比不问更烦。
+    let pending_whats = state::take_due_pending(&mut st, day.as_deref().unwrap_or(""), now);
     let saved = state::save_state(&st).unwrap_or(st);
 
     // 日记：今天还没写过、且"上一个有记录的日子"不是今天 —— 就把那天交给她写。
@@ -567,6 +579,24 @@ fn dsc_turn_report(
             &saved.addendum,
         ),
     );
+
+    // 场景 / 关系 / 待回访：三块互相独立，**空就不加**（页面按空串跳过，零注入）。
+    //
+    // 【为什么放在这儿】`persona` 是在上面几行才拿到的，而称呼要从它身上取 ——
+    // 这段必须排在它后面（第一版插在日记那块后面，编译器直接报 cannot find value）。
+    // 称呼只认**显式配的那一栏**（人设编辑器里的「她叫你」）。
+    //
+    // 【为什么不用 call_names 兜底】那个函数答的是另一个问题：「怎么**叫她**」
+    // （`你是「露娜」（Luna）` → 露娜 / Luna）。拿它当"她怎么称呼主人"会得出
+    // 「她叫你『露娜』」这种荒唐结论。没配就什么都不说，由人设正文自己去定。
+    let address = persona
+        .as_ref()
+        .map(|p| p.address.trim().to_string())
+        .unwrap_or_default();
+    let scene_text = state::render_scene_block(&saved);
+    let relation_text = state::render_relation_block(&saved, &address, now);
+    let pending_text = state::render_pending_block(&pending_whats);
+
     shell_log(&format!(
         "[state] turn={} mood={} v={:.2} aff={} energy={:.2} | body 困={:.2} 体={:.2} 饿={:.2} hr={}{} | user {} 精力={:.2} 投入={:.2}{}{} | hits={} wantModel={} | task={}{}",
         saved.turns,
@@ -632,6 +662,9 @@ fn dsc_turn_report(
         task_signal: task_sig.clone(),
         want_task_judge: state::want_task_judge(task_sig.score),
         diary,
+        scene_text,
+        relation_text,
+        pending_text,
         vitals,
     }
 }
@@ -715,6 +748,8 @@ struct ProactiveReply {
     source: String,
     reason: String,
     state: state::CharState,
+    /// 到点该问一句的伏笔（给页面拼提示词用）。她真说出来了才标记，见 `dsc_proactive_done`
+    pending: Vec<String>,
 }
 
 #[tauri::command]
@@ -727,6 +762,7 @@ fn dsc_proactive(day: String, cap: u32, hour: u32) -> ProactiveReply {
         source: String::new(),
         reason: reason.to_string(),
         state: state::CharState::default(),
+        pending: Vec::new(),
     };
     // 只认显式的 local / model —— 空串、拼错的、老配置里的残留都必须当"关"，
     // 否则一个笔误就会让它自己发请求花钱（成本闸宁可保守）
@@ -752,11 +788,21 @@ fn dsc_proactive(day: String, cap: u32, hour: u32) -> ProactiveReply {
         shell_log(&format!("[state] 主动额度用完（{day} cap={cap}）"));
         return deny("今天的额度用完了");
     }
+    // 到点该问一句的伏笔：**只读一眼**（`peek` 不标记）。
+    // 主动开口有可能最后没发出去（额度用完/隐藏链失败），那就在 peek 里标掉等于
+    // 把这件伏笔悄悄弄丢了 —— 数据纪律：宁可再问一次，也别无声丢掉。
+    let pending = state::peek_due_pending(&st, &day);
     let model = mode == "model";
     let text = if model {
         String::new()
     } else {
-        state::proactive_line(&st, hour)
+        let mut t = state::proactive_line(&st, hour);
+        // 本地话术是模板，没法自然地把伏笔揉进去 —— 单独补一句就够
+        //（模型模式由页面把 pending 拼进提示词，让它自己组织语言）
+        if let Some(first) = pending.first() {
+            t.push_str(&format!("　对了，{}那事后来怎么样了？", first));
+        }
+        t
     };
     let saved = match state::save_state(&st) {
         Ok(s) => s,
@@ -774,12 +820,17 @@ fn dsc_proactive(day: String, cap: u32, hour: u32) -> ProactiveReply {
         source: if model { "model".into() } else { "local".into() },
         reason: String::new(),
         state: saved,
+        pending,
     }
 }
 
 /// 页面想让它"说一句"时把结果交回来落盘（好让 HUD 与设置界面知道说过什么）
 #[tauri::command]
-fn dsc_proactive_done(app: tauri::AppHandle, text: String) -> Result<(), String> {
+fn dsc_proactive_done(
+    app: tauri::AppHandle,
+    text: String,
+    pending: Option<String>,
+) -> Result<(), String> {
     shell_log(&format!("[state] proactive said: {}", state::clip_chars(&text, 120)));
     let character = active_character();
     if character.is_empty() {
@@ -787,6 +838,12 @@ fn dsc_proactive_done(app: tauri::AppHandle, text: String) -> Result<(), String>
     }
     let mut st = state::load_state(&character);
     st.arc = st.arc.clone();
+    // 她**真的把这件事说出口了**才标记 —— 标记只发生在这里（见 dsc_proactive 里的说明）
+    if let Some(w) = pending {
+        if state::mark_pending_asked(&mut st, &w) {
+            shell_log(&format!("[pending] 问过了：{}", w.trim()));
+        }
+    }
     st.updated_at = now_ms();
     state::save_state(&st)?;
     let _ = app.emit("dsc:state-changed", &st);
