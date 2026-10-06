@@ -34,6 +34,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const PROBE_DIR = join(tmpdir(), 'dsc-front-probe');
 const NORMAL_EXE = 'dsc-front-probe.exe';
 const SECRET_EXE = 'keepass-dsc-probe.exe';
+/// 给普通探针一个**有内容的标题**：尾巴故意等于应用名（`dsc-front-probe`），好验清洗
+const PROBE_TITLE_RAW = '验收用的窗口标题 - dsc-front-probe';
+const PROBE_TITLE_CLEAN = '验收用的窗口标题';
 
 let failed = 0;
 function check(name, ok, detail = '') {
@@ -119,9 +122,9 @@ function buildProbe() {
   return '';
 }
 
-function launch(name) {
+function launch(name, args = []) {
   // stdio 一律 ignore：不抓子进程输出，省掉一堆管道上的麻烦
-  return spawn(join(PROBE_DIR, name), [], { stdio: 'ignore' });
+  return spawn(join(PROBE_DIR, name), args, { stdio: 'ignore' });
 }
 
 /**
@@ -179,6 +182,8 @@ async function bringToFront(proc) {
 }
 
 const probes = [];
+/// 普通探针的进程句柄 —— D 段还要用它把前台切回来（期间主人可能切走了窗口）
+let probeA = null;
 function killProbes() {
   for (const p of probes.splice(0)) {
     try {
@@ -223,10 +228,15 @@ async function sampleUntil(ok, tries = 14) {
   return last;
 }
 
-/** 把 watchApp 打开/关掉（读-改-写，绝不整份盲写） */
-async function setWatch(on) {
+/** 改配置（读-改-写，绝不整份盲写） */
+async function setCfg(patch) {
   const cur = await call(`'config_get'`);
-  await call(`'config_set', { cfg: ${JSON.stringify({ ...cur, watchApp: on })} }`);
+  await call(`'config_set', { cfg: ${JSON.stringify({ ...cur, ...patch })} }`);
+}
+
+/** 前台窗口那一层的总开关 */
+async function setWatch(on) {
+  await setCfg({ watchApp: on });
 }
 
 /** 页面侧：当前各块文本（只读看板，见 inject.js 的 __DSC_TURN__） */
@@ -266,8 +276,17 @@ async function promptHasBlock(marker) {
 
 // ══════════════════════ A. 默认关 ══════════════════════
 console.log('\n=== A. 默认必须是关的 ===');
+// 【先归零】隔离目录里的配置会被上一轮动过 —— 脚本中途崩掉时更会把 `watchApp: true`
+// 留在盘上，于是这一次 A 段读到的"默认"根本不是默认（踩过一次）。配置**默认值**那一层
+// 由 Rust 单测守着（config::tests::state_and_sensing_defaults_are_conservative），
+// 这里只负责把当前状态摆回默认，然后验"关着的时候到底发生什么"。
+const fresh = await call(`'config_get'`);
+await call(
+  `'config_set', { cfg: ${JSON.stringify({ ...fresh, watchApp: false, watchAppTitle: true })} }`,
+);
+await sleep(300);
 const cfg0 = await call(`'config_get'`);
-check('配置里 watchApp 默认就是 false', cfg0.watchApp === false, String(cfg0.watchApp));
+check('摆回默认后 watchApp 是 false', cfg0.watchApp === false, String(cfg0.watchApp));
 const off = await readFront();
 check('关着时 dsc_front_app 说 enabled=false', off.enabled === false, JSON.stringify(off));
 check('关着时连一个字节的读数都不返回', off.text === '', JSON.stringify(off.text));
@@ -306,7 +325,11 @@ check('text 就是"进程名（在干什么）"这句话', on.text.indexOf(on.ex
 check('busy 只跟 ide/terminal 有关', on.busy === (on.kind === 'ide' || on.kind === 'terminal'), `kind=${on.kind} busy=${on.busy}`);
 // ★结构层面的隐私断言★：一旦有人往里塞 title/winTitle，这条立刻红
 const keys = Object.keys(on).sort().join(',');
-check('返回值里只有约定字段，没有任何标题类字段', keys === 'busy,enabled,exe,kind,sinceMs,text', keys);
+check(
+  '返回值里只有约定字段（没有多塞窗口内容的地方）',
+  keys === 'busy,enabled,exe,kind,sinceMs,text,title,titleOn',
+  keys,
+);
 
 // ══════════════════════ C. 跟着前台走 + 敏感打码 ══════════════════════
 console.log('\n=== C. 真的跟着前台走 / 敏感进程连名字都不给 ===');
@@ -314,24 +337,35 @@ const buildErr = buildProbe();
 if (buildErr) {
   check('探针 exe 编出来了（C 段的前提）', false, buildErr);
 } else {
-  // 普通探针：进程名不在任何白名单里 → other，但名字要如实报出来
-  const a = launch(NORMAL_EXE);
+  // 普通探针：进程名不在任何白名单里 → other，但名字要如实报出来。
+  // 标题那一项才是这次的重点：光知道 `chrome.exe` 说明不了他在看什么。
+  const a = launch(NORMAL_EXE, [PROBE_TITLE_RAW]);
   probes.push(a);
+  probeA = a;
   await sleep(900);
   const gotA = await bringToFront(a);
   check('能把窗口切到前台（前台锁得靠 AttachThreadInput 才过得去）', gotA === true, String(gotA));
   const ra = await sampleUntil((r) => r.exe === NORMAL_EXE);
   check('切到普通探针 → 读到的就是它', ra.exe === NORMAL_EXE, JSON.stringify(ra));
   check('没见过的进程归 other，但名字照样给', ra.kind === 'other' && ra.exe === NORMAL_EXE, JSON.stringify(ra));
+  // ★标题：既要真读到，也要真清洗★
+  check('读到了窗口标题', String(ra.title || '').length > 0, JSON.stringify(ra.title));
+  check(
+    '标题尾巴上那个" - 应用名"被剪掉了',
+    ra.title === PROBE_TITLE_CLEAN,
+    `${JSON.stringify(ra.title)} 期望 ${JSON.stringify(PROBE_TITLE_CLEAN)}`,
+  );
+  check('读数那句话里也带着标题', String(ra.text).indexOf(PROBE_TITLE_CLEAN) >= 0, ra.text);
 
-  // ★敏感探针★：名字里带 keepass → 必须被打码
-  const b = launch(SECRET_EXE);
+  // ★敏感探针★：名字里带 keepass → 进程名和标题**一起**打码
+  const b = launch(SECRET_EXE, ['我的密码库 - KeePassXC']);
   probes.push(b);
   await sleep(900);
   const gotB = await bringToFront(b);
   check('能把敏感探针切到前台', gotB === true, String(gotB));
   const rb = await sampleUntil((r) => r.kind === 'other' && r.exe === '');
   check('敏感进程的进程名一个字都不给', rb.exe === '', JSON.stringify(rb));
+  check('★敏感进程的窗口标题也一个字都不给★', rb.title === '', JSON.stringify(rb.title));
   check('敏感进程的读数只说"在别的软件里"', rb.text === '在别的软件里', String(rb.text));
   check('敏感进程也不算 busy（不泄露"在哪类软件里"）', rb.busy === false, String(rb.busy));
 
@@ -339,31 +373,70 @@ if (buildErr) {
   await bringToFront(a);
   const rc = await sampleUntil((r) => r.exe === NORMAL_EXE);
   check('再切回普通探针 → 又读得到它（真的在跟随前台）', rc.exe === NORMAL_EXE, JSON.stringify(rc));
+
+  // 「读多细」那一档：关掉就退回"只知道你在用哪个软件"
+  await setCfg({ watchAppTitle: false });
+  await sleep(500);
+  const rt = await sampleUntil((r) => r.title === '');
+  check('关掉「连窗口标题一起看」→ 标题没了', rt.title === '', JSON.stringify(rt.title));
+  check('但进程名还在（没有一刀切关掉整层）', String(rt.exe || '').length > 0, JSON.stringify(rt));
+  check('读数那句话里也不再提窗口', String(rt.text).indexOf('窗口是') < 0, rt.text);
+  await setCfg({ watchAppTitle: true });
+  await sleep(400);
 }
 
 // ══════════════════════ D. 真的送进 prompt ══════════════════════
 console.log('\n=== D. 这一块真的拼进了发给模型的正文 ===');
-// 前台此刻停着探针（C 段切过去的）——正好用来验"壳读到的 = 页面拿到的"
+// 【为什么在这里再切一次前台】C 段到 D 段之间隔着好几秒，而主人可能正好把窗口切走了
+// （实测撞上过：C 段还停在探针上，D 段读到的是 msedge.exe）。这一段要验的是
+// "壳读到的 = 页面拿到的"，所以先把前台钉回探针。
+if (probeA) {
+  await bringToFront(probeA);
+  await sleep(300);
+}
 await driveTurn('验收：她看不看得见我在用什么');
 const t1 = await readTurn();
 check('壳把【他此刻】带回到页面了', String(t1.front || '').indexOf('【他此刻】') >= 0, String(t1.front || '').slice(0, 70));
+const p1 = await promptHasBlock('【他此刻】');
+check('这一块真的拼进了发给模型的 prompt', p1.has === true, JSON.stringify(p1));
+/** 在页面里判断 prompt 含不含某串（别把正文送回 node 判，见 promptHasBlock 上的说明） */
+async function promptHasText(text) {
+  return evalIn(
+    main,
+    `(function(){
+       const body = window.__DSC_AUGMENT__(JSON.stringify({prompt:'x', chat_session_id:'probe-front'}), 'probe');
+       const p = body ? (JSON.parse(body).prompt || '') : '';
+       return p.indexOf(${JSON.stringify(text)}) >= 0;
+     })()`,
+  );
+}
 const expectExe = buildErr ? '' : NORMAL_EXE;
 if (expectExe) {
   check('带回来的就是你此刻真的在前台的那个进程', String(t1.front).indexOf(expectExe) >= 0, String(t1.front).slice(0, 70));
+  check('prompt 里带着那个进程名', (await promptHasText(expectExe)) === true);
+  // ★这一条才是主人要的那件事★：她拿到的不是"chrome.exe"，而是"他在看什么"
+  check(
+    '带回来的那句话里带着窗口标题',
+    String(t1.front).indexOf(PROBE_TITLE_CLEAN) >= 0,
+    String(t1.front).slice(0, 110),
+  );
+  check('prompt 里也带着那句标题', (await promptHasText(PROBE_TITLE_CLEAN)) === true);
 }
-const p1 = await promptHasBlock('【他此刻】');
-check('这一块真的拼进了发给模型的 prompt', p1.has === true, JSON.stringify(p1));
-const hasExeInPrompt = expectExe
-  ? await evalIn(
-      main,
-      `(function(){
-         const body = window.__DSC_AUGMENT__(JSON.stringify({prompt:'x', chat_session_id:'probe-front'}), 'probe');
-         const p = body ? (JSON.parse(body).prompt || '') : '';
-         return p.indexOf(${JSON.stringify(expectExe)}) >= 0;
-       })()`,
-    )
-  : null;
-if (expectExe) check('prompt 里带着那个进程名', hasExeInPrompt === true);
+
+// 只关「读多细」那一档：进程名照给、标题一个字都不进 prompt
+await setCfg({ watchAppTitle: false });
+await sleep(300);
+await driveTurn('验收：只要进程名');
+const t3 = await readTurn();
+check(
+  '关掉标题档 → 块还在、但不再提窗口',
+  String(t3.front).indexOf('【他此刻】') >= 0 && String(t3.front).indexOf('窗口是') < 0,
+  String(t3.front).slice(0, 90),
+);
+const t3HasTitle = expectExe ? await promptHasText(PROBE_TITLE_CLEAN) : false;
+check('关掉标题档 → prompt 里那句标题也没了', t3HasTitle === false);
+await setCfg({ watchAppTitle: true });
+await sleep(300);
 
 // 关掉之后：下一轮必须什么都不注入（一个字节都不加）
 await setWatch(false);

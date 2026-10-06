@@ -612,14 +612,18 @@ async function refreshTools() {
 async function refreshFront() {
   const c = await invoke('config_get');
   const on = !!c.watchApp;
+  const withTitle = !!c.watchAppTitle;
   $('tl-front').checked = on;
+  $('tl-front-title').checked = withTitle;
+  // 总开关关着时"读多细"这一档没有意义 —— 灰掉，别让人以为它能单独生效
+  $('tl-front-title').disabled = !on;
   if (!on) {
     $('tl-front-sub').textContent = '关着';
     $('tl-front-now').textContent = '关着 —— 她不知道你在用什么';
     window.__DSC_FRONT__ = { enabled: false };
     return;
   }
-  $('tl-front-sub').textContent = '开着 · 只报进程名';
+  $('tl-front-sub').textContent = withTitle ? '开着 · 连标题一起看' : '开着 · 只报进程名';
   try {
     const r = await invoke('dsc_front_app');
     // 这一行就是她**实际会看到**的那句话，一字不差（含"在别的软件里"那种被打码的）
@@ -2539,6 +2543,19 @@ $('tl-front').addEventListener('change', async (e) => {
   await refreshFront().catch(fail);
 });
 $('tl-front-probe').addEventListener('click', () => refreshFront().catch(fail));
+
+// 「读多细」这一档：关掉就退回"只知道你在用哪个软件"
+$('tl-front-title').addEventListener('change', async (e) => {
+  const want = e.target.checked;
+  try {
+    await patchCfg({ watchAppTitle: want });
+    toast(want ? '好 —— 她能看到窗口标题了（敏感软件除外）' : '好 —— 她只知道你在用哪个软件');
+  } catch (err) {
+    e.target.checked = !want;
+    fail(err);
+  }
+  await refreshFront().catch(fail);
+});
 
 /** 设置页补处理：卡片丢了（页面刷新/关掉了）也能决定，只是不会有回灌 */
 async function decidePending(allow) {

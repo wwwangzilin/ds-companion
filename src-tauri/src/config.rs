@@ -97,6 +97,14 @@ pub struct AppConfig {
     /// 不全的黑名单）。敏感进程（密码管理器那类）连名字都不给。只在本机处理。
     #[serde(default)]
     pub watch_app: bool,
+    /// **连窗口标题一起读**（默认开）。关掉就退回"只知道你在用哪个软件"。
+    ///
+    /// 【为什么要单独一个旋钮】标题的信息量远大于进程名 —— `chrome.exe` 说明不了任何事，
+    /// 而标题直接回答"他在看什么"。但它同时也是这一层里**最**敏感的一格（网页标题、文件名、
+    /// 邮件主题全在里面），所以给它一个能单独关掉的开关，而不是藏在上面那个总开关里。
+    /// 敏感进程（密码管理器那类）无论这个开关怎么设都一律打码。
+    #[serde(default = "default_true")]
+    pub watch_app_title: bool,
     /// 「她手上正在做的事」从哪来：`local` = 只从人设的活动池里挑（零成本）；
     /// `auto` = 先让模型按当前场景写一条，拿不到就退回本地池。
     ///
@@ -287,6 +295,8 @@ impl Default for AppConfig {
             avatar_enabled: true,
             // 【默认关】"她看得见你在用什么软件"这件事得主人自己点头 —— 见字段上的说明
             watch_app: false,
+            // 标题默认跟着总开关一起读（主人要的就是"她看得见我在看什么"）
+            watch_app_title: true,
             activity_mode: default_activity_mode(),
             // 【默认关】桌宠一出现就得让人知道那是谁的东西 —— 见字段上的说明
             pet_enabled: false,
@@ -595,6 +605,8 @@ mod tests {
         assert!(d.avatar_enabled);
         // ★"知道你在用什么软件"必须默认关★ —— 它越过了"聊天内容"那条线
         assert!(!d.watch_app, "watch_app 默认必须关（要主人自己点头才开）");
+        // 但"读多细"这一档默认给到底：只报进程名等于什么都没说（chrome.exe 都一样）
+        assert!(d.watch_app_title, "watch_app_title 默认要开（标题才是'在看什么'）");
         // 活动默认走模型（`local` 只是"省额度"的退路，不是默认）
         assert_eq!(d.activity_mode, "auto");
         // ★桌宠也默认关★ —— 一个置顶窗口凭空出现在桌面上，得是主人自己点开的

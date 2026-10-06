@@ -32,8 +32,12 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 fn main() {
+    // 窗口标题可以从命令行给 —— 验收要造"标题里真有内容"的场面（默认那句太干净了）
+    let cap_text = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "dsc-front-probe".to_string());
     let text = wide("dsc front probe");
-    let cap = wide("dsc-front-probe");
+    let cap = wide(&cap_text);
     unsafe {
         MessageBoxW(std::ptr::null_mut(), text.as_ptr(), cap.as_ptr(), 0);
     }

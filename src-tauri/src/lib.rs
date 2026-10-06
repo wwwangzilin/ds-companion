@@ -522,7 +522,18 @@ fn dsc_turn_report(
     //
     // 【为什么只在 auto 时并入】`task_mode = "off"` 是主人明确说"别判我" —— 那就不该
     // 被前台信号绕着走。
-    let front_app = if cfg.watch_app { front::current() } else { None };
+    let front_app = if cfg.watch_app {
+        // 标题照**读**（几乎零成本），要不要用它由 `watch_app_title` 说了算 ——
+        // 关掉那一档等于她只知道你在用哪个软件，一个字的标题都拿不到。
+        front::current().map(|mut a| {
+            if !cfg.watch_app_title {
+                a.title.clear();
+            }
+            a
+        })
+    } else {
+        None
+    };
     let front_since = front_app.as_ref().map(|a| front::note(a, now)).unwrap_or(0);
     if cfg.task_mode == "auto" {
         if let Some(a) = front_app.as_ref() {
@@ -659,7 +670,7 @@ fn dsc_turn_report(
     // 一个字节都不注入。
     let front_text = match front_app.as_ref() {
         Some(a) => format!(
-            "【他此刻】他正在 {}。\n【这是你自己看到的，不是他告诉你的。可以顺口带一句，但别每次都报 —— 也别显得像在盯着他。】",
+            "【他此刻】他正在 {}。\n【这是你自己看到的，不是他告诉你的。可以顺口带一句，但别每次都报 —— 也别显得像在盯着他。那句窗口标题是**你瞄到的一眼**，不是他跟你说的：别一个字一个字念出来，也别拿它当话题硬聊，它只是让你那句关心落在对的地方。】",
             front::describe(a, front_since)
         ),
         None => String::new(),
@@ -804,12 +815,17 @@ fn dsc_front_app() -> serde_json::Value {
         return serde_json::json!({ "enabled": false, "text": "" });
     }
     match front::current() {
-        Some(a) => {
+        Some(mut a) => {
+            if !cfg.watch_app_title {
+                a.title.clear();
+            }
             let since = front::note(&a, now_ms());
             serde_json::json!({
                 "enabled": true,
                 "exe": a.exe,
                 "kind": a.kind,
+                "title": a.title,
+                "titleOn": cfg.watch_app_title,
                 "busy": a.means_busy(),
                 "sinceMs": since,
                 "text": front::describe(&a, since),
@@ -819,6 +835,8 @@ fn dsc_front_app() -> serde_json::Value {
             "enabled": true,
             "exe": "",
             "kind": "other",
+            "title": "",
+            "titleOn": cfg.watch_app_title,
             "busy": false,
             "sinceMs": 0,
             "text": "读不到（前台可能是系统窗口，或者权限不够）",

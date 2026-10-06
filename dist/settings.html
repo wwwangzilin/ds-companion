@@ -587,27 +587,38 @@
               <h2>她看得见你在用什么软件</h2>
               <span class="editor-sub" id="tl-front-sub">关着</span>
             </header>
-            <label class="switch" title="打开后她每一轮会知道你在用哪个软件（只报进程名，从不读窗口标题，只在本机处理）">
+            <label class="switch" title="打开后她每一轮会知道你在用什么软件、在看什么（只在本机处理，一个字节都不外发）">
               <input type="checkbox" id="tl-front" />
               <span class="track"><span class="knob"></span></span>
               <span class="switch-label">让她知道你在用什么软件</span>
+            </label>
+            <label class="switch" title="关掉就只知道你在用哪个软件（chrome.exe 什么都说明不了）；开着才读得到窗口标题 —— 也就是"你在看什么"。敏感进程无论怎样都打码。">
+              <input type="checkbox" id="tl-front-title" />
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">连窗口标题一起看（这才知道你在看什么）</span>
             </label>
             <div class="row" style="display:flex;gap:8px;align-items:center;margin-top:10px">
               <code id="tl-front-now" style="flex:1 1 auto;min-width:0;padding:7px 10px;border-radius:6px;background:rgba(127,127,127,.14);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</code>
               <button class="btn ghost" id="tl-front-probe">现在看一眼</button>
             </div>
             <p class="hint">
-              <b>只读进程名</b>（<code>Code.exe</code> 这种），<b>从不读窗口标题</b> ——
-              标题里什么都有：网页在讲什么、邮件主题、文件名、密码管理器里那条记录叫什么。
-              要报标题就得维护一串永远不全的黑名单，那不如不报。
+              读的是<b>进程名</b>（<code>Code.exe</code>）和<b>窗口标题</b>。
+              进程名只说明"在用什么软件"，标题才说明"在看什么" —— 同样是
+              <code>chrome.exe</code>，可能是在查文档，也可能是在刷视频。
             </p>
             <p class="hint">
-              密码管理器 / 银行 / 支付类进程<b>连名字都不给</b>，一律回一句"在别的软件里"。
+              <b>读得到 ≠ 念出来</b>：标题只在那一轮拼进上下文，不落盘、不外发；给她的原话里
+              写着"那是你瞄到的一眼，别一个字一个字念出来"。标题会先剪掉未读计数和
+              <code>- Google Chrome</code> 这类应用名尾巴，太长也会截断。
+            </p>
+            <p class="hint">
+              密码管理器 / 银行 / 支付类进程<b>连名字带标题都不给</b>，一律回一句"在别的软件里"。
               数据只在这台机器上，一个字节都不外发（她本来就跑在本机）。
             </p>
             <p class="hint">
               IDE 与终端算"你在干正事"：配合「干活时安静」，写代码时她会自己收着点，不刷存在感。
-              浏览器<b>不算</b> —— 查资料和刷视频是同一个 <code>chrome.exe</code>，说明不了任何事。
+              浏览器<b>不算</b> —— 查资料和刷视频是同一个 <code>chrome.exe</code>，光看进程名说明不了任何事
+              （这也是要读标题的原因）。
             </p>
           </section>
 
