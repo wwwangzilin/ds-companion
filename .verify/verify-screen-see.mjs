@@ -232,6 +232,28 @@ const checks = [
   ['注入块里带上了她抄的那行', /7788/.test(block), /7788/.test(block) ? '在' : '不在'],
 ];
 
+// ── 她嘴里那句：必须来自"亲眼看"，不能是 OCR 挑的 ──────────────────────
+// 板上那行的 OCR 结果是 `* release code 7788`（带星号），而她抄回来的是
+// `release code 7788`。所以星号在不在，正好能分辨这句是从哪条路来的 ——
+// 这是主人报的"乱码"那个 bug 的回归断言（OCR 挑出来的小字是偏旁碎片）。
+const sayRaw = await evalIn(
+  settings,
+  `(async () => {
+     const s = await window.__TAURI_INTERNALS__.invoke('dsc_screen_state');
+     return JSON.stringify({ say: s.say || '', see: s.see || '', seeFor: s.seeFor || '' });
+   })()`,
+  60000,
+);
+const sayInfo = JSON.parse(String(sayRaw));
+console.log('');
+console.log('[她说] ' + (sayInfo.say || '（没说）'));
+console.log('[她看到] ' + String(sayInfo.see || '').replace(/\n/g, ' / ').slice(0, 100));
+checks.push([
+  '她嘴里那句来自"亲眼看"（不带 OCR 的星号）',
+  /release code 7788/.test(sayInfo.say) && !/\*/.test(sayInfo.say),
+  sayInfo.say.slice(0, 50) || '（空）',
+]);
+
 let bad = 0;
 for (const [name, ok, ev] of checks) {
   if (!ok) bad++;

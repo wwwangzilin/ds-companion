@@ -152,13 +152,16 @@ pub struct AppConfig {
     pub screen_say_mode: String,
     /// **让她"亲眼看"一眼**（多模态）：把缩过的截图交给模型，换回"在做什么 + 重点在哪"。
     ///
-    /// 【为什么要和 `screen_watch` 分开】`screen_watch` 是本地 OCR —— 零成本、一秒出结果，
+    /// 【为什么和 `screen_watch` 分开】`screen_watch` 是本地 OCR —— 零成本、一秒出结果，
     /// 但它只吐字，**不知道主人在看哪一块**（截图里没有鼠标指针，它没有任何线索）。
     /// 这一条是花钱那条：一次约 200 token，换来"焦点在哪"和一个能读懂上下文的眼睛。
     ///
-    /// 所以两者是"门铃和眼睛"的关系：OCR 负责发现"屏幕变了"，变了才值得让她看一眼。
-    /// 默认关 —— 它是这个项目里唯一会**持续**产生费用的开关。
-    #[serde(default)]
+    /// 【**默认就是开的**（主人 2026-10-06 拍板）】小字号的中文会被 Windows OCR 拆成
+    /// 偏旁 —— 「设置」→「讠殳置」、「候」→「亻制」、「如果」→「爿珩」—— 那些碎片是
+    /// 合法汉字、滤不掉，念出来就是乱码（主人报的"她有时候说的是乱码"）。所以：
+    /// **默认不用 OCR 产出任何给她看的文字**，它只在内部当"这一屏变了没"的门铃（零成本）。
+    /// 关掉这一条 = 退回纯 OCR 那条老路（省钱，但会念出偏旁碎片）。
+    #[serde(default = "default_true")]
     pub screen_see: bool,
     /// 虚拟身体层（困倦/体力/饿/心跳）注入进【状态】块
     #[serde(default = "default_true")]
@@ -355,7 +358,7 @@ impl Default for AppConfig {
             screen_every_minutes: default_screen_every(),
             screen_chars: default_screen_chars(),
             screen_say_mode: default_screen_say(),
-            screen_see: false,
+            screen_see: true,
             body_enabled: true,
             user_state_enabled: true,
             self_review_mode: default_review_mode(),
@@ -671,10 +674,12 @@ mod tests {
         assert!(!d.screen_watch, "screen_watch 默认必须关（要勾选确认才开）");
         assert_eq!(d.screen_every_minutes, 5);
         assert_eq!(d.screen_chars, 240);
-        // 看见了就顺口说一句（主人点名要的），本地拼、不花额度
+        // 看见了就顺口说一句（主人点名要的）
         assert_eq!(d.screen_say_mode, "local");
-        // ★"让她亲眼看"是唯一会持续花钱的开关，必须默认关★（本地 OCR 才是默认那条路）
-        assert!(!d.screen_see, "screen_see 默认必须关（一次约 200 token）");
+        // ★默认就让她亲眼看（主人 2026-10-06 拍板）★
+        // 本地 OCR 会把小字号中文拆成偏旁（「设置」→「讠殳置」），那些碎片滤不掉、
+        // 念出来就是乱码。所以默认不走 OCR 出文字，它只在内部当"这一屏变了没"的门铃。
+        assert!(d.screen_see, "默认就该让她亲眼看 —— OCR 挑出来的小字是偏旁碎片");
     }
 
     /// 端到端：一份坏 config.json 必须被隔离成 `.bad-*`，而不是被下一次保存悄悄覆盖。

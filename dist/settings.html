@@ -695,14 +695,19 @@
               <code>screen.rs</code> 的 <code>local_line</code> 那张表里。
             </p>
             <p class="hint">
-              <b>「让她亲眼看」是花钱的那条路</b>：把缩到 512 宽的截图交给模型看一眼，换回
+              <b>默认让她亲眼看</b>（「看图」那一档）：把缩到 512 宽的截图交给模型，换回
               「在做什么 + 重点在哪」。一次约 <b>200 token</b>，而且<b>只在你这一屏有变化时</b>才看
               —— 有没有变由本机 OCR 判断（它零成本），所以盯着同一页看半小时也只花一次的钱。
             </p>
             <p class="hint">
-              <b>两条路的分工</b>：本机认字<b>不联网、不花钱</b>，但只吐字、不知道你在看哪一块；
-              亲眼看要<b>把图传到 DeepSeek</b>（走网页版额度）。截图两条路都只在内存里。
-              注意：图传上去之后<b>留在账号里</b> —— 上游没有删除接口，<b>删对话不会把文件删掉</b>。
+              <b>为什么不默认用本机认字</b>：小字号的中文会被 Windows OCR <b>拆成偏旁</b> ——
+              「设置」认成「讠殳置」、「候」认成「亻制」、「如果」认成「爿珩」。这些碎片本身是
+              合法汉字，滤不干净，她念出来就是乱码。所以本机认字只当"这一屏变了没"的门铃，
+              <b>不产出给她看的字</b>。切成「只认字」能省钱，代价就是可能念出这种碎片。
+            </p>
+            <p class="hint">
+              <b>截图两条路都只在内存里</b>，一个字节都不落盘。但亲眼看那条会<b>把图传到 DeepSeek</b>
+              （走网页版额度），而且图<b>留在账号里</b> —— 上游没有删除接口，<b>删对话不会把文件删掉</b>。
             </p>
           </section>
 
@@ -1050,18 +1055,19 @@
           <b>屏幕上写着什么</b>：网页在讲什么、文档里写了什么、聊天框里是谁在说话。
         </p>
         <div style="padding: 14px 16px 6px; line-height: 2; font-size: 12.5px; color: var(--text-2)">
-          <div>① 每隔几分钟截一次<b>当前前台窗口</b>，在本机认成字（Windows 自带，离线，不联网）</div>
-          <div>② 截图<b>只进内存</b>，一个字节都不落盘；认完当场就没了</div>
-          <div>③ 只把清洗截断后的 <b>200~300 字</b>放进那一轮对话 —— 整屏一千多字不会全给她</div>
-          <div>④ 密码管理器 / 银行那类软件在前台时，<b>这一趟根本不截</b>（不是打码，是不看）</div>
-          <div>⑤ 每次观测都留在读数里（什么时候看的、多少字、有没有跳过），你随时能查</div>
-          <div>⑥ 关掉开关立刻停，也会把"上一轮看过什么"忘掉</div>
+          <div>① 每隔几分钟截一次<b>当前前台窗口</b></div>
+          <div>② <b>默认把这张图交给模型看一眼</b>（走 DeepSeek 网页版额度，一次约 200 token）——
+            她因此说得清你在看哪一块，图上会画个圈标出你鼠标的位置</div>
+          <div>③ 不想花这个钱：把下面「看图」切成 <b>只认字</b>，就退回本机识别（离线、不联网、不花钱）</div>
+          <div>④ 两条路的截图都<b>只进内存</b>，一个字节都不落盘</div>
+          <div>⑤ 密码管理器 / 银行那类软件在前台时，<b>这一趟根本不截</b>（不是打码，是不看）</div>
+          <div>⑥ 每次观测都留在读数里（什么时候看的、多少字、有没有跳过），你随时能查；关掉开关立刻停</div>
         </div>
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px 16px; border-top: 1px solid var(--line); flex-wrap: wrap">
           <label class="switch">
             <input type="checkbox" id="sc-ack" />
             <span class="track"><span class="knob"></span></span>
-            <span class="switch-label">我明白它会定时截屏、并在本机认字</span>
+            <span class="switch-label">我明白它会定时截屏、默认把图传给模型看</span>
           </label>
           <button class="btn primary" id="sc-confirm" disabled>打开</button>
         </div>

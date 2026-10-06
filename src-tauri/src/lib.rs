@@ -2063,15 +2063,22 @@ async fn dsc_screen_now() -> screen::Snapshot {
 /// 【为什么这件事必须由页面做】上传图片要用页面的登录态和 PoW（见 `screen::Shot` 的注释），
 /// 所以"她看到了什么"只有页面知道。壳这边只负责记住它 —— 下一轮拼【他屏幕上】时
 /// 优先用它，而不是本地 OCR 那堆字。
+///
+/// 返回值 = **顺手换掉了桌宠那句**（`note_seen` 会用她真正看到的重点重算一句）——
+/// 那就得叫醒桌宠，否则她得等到下一次截图才会冒出来。
 #[tauri::command]
-fn dsc_screen_see(text: String, size: Option<String>) -> bool {
-    let ok = screen::note_seen(&text, size.as_deref().unwrap_or(""));
+fn dsc_screen_see(app: tauri::AppHandle, text: String, size: Option<String>) -> bool {
+    let says = screen::note_seen(&text, size.as_deref().unwrap_or(""));
     shell_log(&format!(
-        "[screen] 她亲眼看了：{}（{} 字）",
-        if ok { "收到了" } else { "空回复，丢掉" },
-        text.chars().count()
+        "[screen] 她亲眼看了：{}（{} 字）{}",
+        if text.trim().is_empty() { "空回复，丢掉" } else { "收到了" },
+        text.chars().count(),
+        if says { " · 顺手换了她那句" } else { "" }
     ));
-    ok
+    if says {
+        pet::ping(&app);
+    }
+    says
 }
 
 // ─────────────────────── 用对话同步设置 ───────────────────────

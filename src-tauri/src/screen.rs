@@ -62,6 +62,8 @@ pub struct Snapshot {
     pub see_at: u64,
     /// 她看的那张图缩到多大（"512x319"）。空 = 这次没生成图
     pub see_size: String,
+    /// 那段 `see` 对应的是**哪一屏**（存当时的清洗文本，用来判断它有没有过期）
+    pub see_for: String,
 }
 
 /// 一张等着页面来取的图（她"亲眼看"那条路）。
@@ -207,7 +209,7 @@ pub fn is_noise(line: &str) -> bool {
     false
 }
 
-/// 把一批原始行收拾成"要喂给她的那一段"。
+/// 把屏幕上的一段收拾成"要喂给她的那一段"。
 ///
 /// 顺序是**屏幕上从上到下**的（OCR 就是这么给的）—— 网页标题一般在最上面，
 /// 于是自然落在前面，正是最该让她看到的那部分。截断按**字符数**。
@@ -216,7 +218,9 @@ pub fn compose(lines: &[String], max_chars: u32) -> String {
     let mut out = String::new();
     let mut seen: Vec<String> = Vec::new();
     for raw in lines {
-        let t = squeeze(raw);
+        // 【顺序不能反】OCR 是**逐字**给框的（`讠 殳 置`），先 squeeze 把它们连成
+        // `讠殳置`，strip_radicals 才认得出该抠哪个。
+        let t = strip_radicals(raw);
         if is_noise(&t) {
             continue;
         }
@@ -293,8 +297,7 @@ pub fn pick_subject(text: &str) -> Option<String> {
 ///
 /// 【为什么模板里不带自称】它得对任何角色都成立 —— "本小姐"这种是某个角色的人设，
 /// 写死在壳里就等于把壳绑给一个角色了。
-pub fn local_line(subject: &str) -> String {
-    const TPL: &[&str] = &[
+pub fn local_line(subject: &str) -> String {    const TPL: &[&str] = &[
         "主人居然在看「{}」",
         "「{}」……在看这个啊",
         "又打开了「{}」呢",
@@ -312,6 +315,13 @@ pub fn local_line(subject: &str) -> String {
 /// 「看见了就说一句」—— 按配置和内容决定这次说不说，返回（那句话, 时间戳）
 fn say_for(cfg: &crate::config::AppConfig, text: &str) -> (String, u64) {
     if cfg.screen_say_mode != "local" {
+        return (String::new(), 0);
+    }
+    // 【默认不用 OCR 挑主题】小字号中文会被 Windows OCR 拆成偏旁（「设置」→「讠殳置」），
+    // 拿它当宾语念出来就是乱码 —— 那正是主人报的"她有时候说的是乱码"。
+    // 开着"亲眼看"时宁可**先不冒泡**：等她看完回来，`note_seen` 会用她真正看到的重算一句
+    // 并叫醒桌宠。那一下不花额外的钱 —— 图本来就已经看过了。
+    if cfg.screen_see {
         return (String::new(), 0);
     }
     match pick_subject(text) {
@@ -468,23 +478,106 @@ pub fn take_shot() -> Option<Shot> {
     with_state(|s| s.shot.take())
 }
 
+/// 从她「亲眼看」回来的那段里挑出能当气泡宾语的那一句。
+///
+/// 【为什么优先用它】本地 OCR 挑出来的主题可能是乱的（偏旁碎片：`讠殳置`），而这段是
+/// 模型亲眼看过的 —— 约定的格式是两行（`在做什么：…` / `重点：…`），**重点那行最好用**。
+/// 格式没照做时退回第一行，都比 OCR 挑的准。
+fn subject_from_see(see: &str) -> Option<String> {
+    let mut first: Option<String> = None;
+    for line in see.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        for pre in ["重点：", "重点:", "重点 ", "重点"] {
+            if let Some(rest) = l.strip_prefix(pre) {
+                let r = rest.trim().trim_start_matches(['：', ':']).trim();
+                if !r.is_empty() {
+                    return Some(clip_chars(r, SUBJECT_CHARS));
+                }
+            }
+        }
+        if first.is_none() {
+            let l = l
+                .strip_prefix("在做什么：")
+                .or_else(|| l.strip_prefix("在做什么:"))
+                .unwrap_or(l)
+                .trim();
+            if !l.is_empty() {
+                first = Some(l.to_string());
+            }
+        }
+    }
+    first.filter(|s| s.chars().count() >= 2).map(|s| clip_chars(&s, SUBJECT_CHARS))
+}
+
 /// 页面看完回来交作业：她**亲眼**看到的那段（"在做什么 + 重点在哪"）。
 ///
-/// 【为什么要截断】这是模型的自由输出，长度不可控，而它下一轮就要进上下文。
+/// 返回 `true` = 顺手把桌宠那句换成了更准的，调用方该去叫醒桌宠。
+///
+/// 【为什么要在这里重算气泡】截图那一刻只有本地 OCR 那版主题（可能是偏旁碎片），
+/// 而她看完之后手上才有准的内容。重算不花额外的钱 —— 这次看图本来就花了。
 pub fn note_seen(text: &str, size: &str) -> bool {
     let t = text.trim();
     if t.is_empty() {
         return false;
     }
+    let mut says = false;
     with_state(|s| {
         let snap = s.snap.get_or_insert_with(Snapshot::default);
         snap.see = clip_chars(t, SEE_CHARS);
         snap.see_at = crate::now_ms();
+        let now_text = snap.text.clone();
+        snap.see_for = now_text;
         if !size.is_empty() {
             snap.see_size = size.to_string();
         }
+        if let Some(subj) = subject_from_see(&snap.see) {
+            let line = local_line(&subj);
+            if line != snap.say {
+                snap.say = line;
+                snap.say_at = crate::now_ms();
+                says = true;
+            }
+        }
     });
-    true
+    says
+}
+
+/// **只会出现在部件里的独用字** —— 正常中文里不会单独用它们。
+///
+/// 【为什么需要这张表】小字号的中文，Windows OCR 经常**把字拆成部件**。实测样本
+/// （屏幕上是 DSH 的界面，13~15px 正文）：
+///   「设置」→「讠 殳 置」  「候」→「亻 制」  「折」→「扌 斤」
+///   「消」→「氵 肖」      「如果」→「爿 珩」
+/// 它们**全都是合法汉字**，靠"像不像字""是不是常用字"根本判不出来。但拆出来的部件
+/// 本身是独用字 —— 正常文本里不会出现 —— 所以这一条判据既准又便宜。
+///
+/// 【这是主人报的那个 bug】桌宠那句会念成「主人居然在看「讠殳置」」，看起来就是乱码。
+///
+/// 【为什么删得放心】这些字出现在真实屏幕上就等于 OCR 拆了字，删掉只会让
+/// `讠殳置` 变成 `置`（更接近原意），不会伤到任何正常内容。
+///
+/// 【这张表是补出来的，不是列全的】拆出来的碎片**不一定**是"部件专用字" ——
+/// 「设」被拆成 `讠` + `殳`，而 `殳` 是它的声旁、本身是个罕见的正经字。所以策略是：
+/// **遇到一个样本就补一个**，并把它写进 `broken_ocr_radicals_are_stripped` 那条测试里。
+/// 判断标准只有一条：现代中文里会不会单独用它（`肖`、`斤` 这类常用字一律不许进表 ——
+/// 它们是"消息""公斤"的一部分，删了就真丢字了）。
+const RADICAL_NOISE: &str =
+    "讠亻彳扌氵忄纟阝卩廴辶钅饣疒衤礻犭罒疋丷爿刂冫灬虍亠冖丿丨丶乛乚亅殳";
+
+fn is_radical_noise(c: char) -> bool {
+    RADICAL_NOISE.contains(c)
+}
+
+/// 抠掉 OCR 拆字留下的偏旁碎片，顺手把多出来的空格收掉。
+///
+/// 【它和 squeeze 的分工】squeeze 管"逐字框之间的空格"（`中 学 电 话 亭` → `中学电话亭`），
+/// 这里管"被拆出来的部件"。两个都做完，OCR 那点毛病才算收拾干净。
+pub fn strip_radicals(line: &str) -> String {
+    let kept: String = squeeze(line).chars().filter(|c| !is_radical_noise(*c)).collect();
+    squeeze(&kept)
 }
 
 /// 这一次不该看的原因（空 = 可以看）。
@@ -663,9 +756,14 @@ pub fn render_block(cfg: &crate::config::AppConfig) -> String {
     }
     let snap = snapshot();
     // 两条路，优先**她亲眼看过**的那条：它带"焦点在哪"，而 OCR 那版只有一堆字。
-    // 这个优先级是有意的 —— 主路是多模态，OCR 是兜底（它没花额度、但也不知道该看哪）。
+    //
+    // 【开着"亲眼看"时，宁可这一轮不注入】刚截完、页面还没跑完那一小会儿，手上只有 OCR。
+    // 拿它去凑数，喂进去的可能是「0 露娜模式 " 1 个后台任务运行中 丷」这种带偏旁碎片的
+    // 东西 —— 她读着就会说出些莫名其妙的话。等下一轮 see 回来再注入，只晚一次。
     let (head, body) = if !snap.see.trim().is_empty() {
         ("【他屏幕上】你自己看了一眼，看到的是：", snap.see.clone())
+    } else if cfg.screen_see {
+        return String::new();
     } else {
         ("【他屏幕上】大概写着这些：", snap.text.clone())
     };
@@ -842,11 +940,16 @@ mod tests {
         assert!(c.contains("完全不同的另一个主题"), "{c}");
     }
 
-    /// 关掉「说一句」就真的不说；开着才说
+    /// 关掉「说一句」就真的不说；开着才说。
+    ///
+    /// 【注意 `screen_see` 要显式关掉】这条测的是**退回纯 OCR 那条老路**时的行为；
+    /// 默认是开着"亲眼看"的，那时 `say_for` 故意不冒泡（等 see 回来再说）——
+    /// 见 `say_for_skips_ocr_subjects_when_seeing_is_on`。
     #[test]
     fn say_for_respects_the_switch() {
         let mut cfg = crate::config::AppConfig::default();
         cfg.screen_say_mode = "local".to_string();
+        cfg.screen_see = false;
         let (say, at) = say_for(&cfg, "中学电话亭的那面墙，为何成了学生的哭墙？");
         assert!(!say.is_empty());
         assert!(say.contains("中学电话亭的那面墙"));
@@ -925,10 +1028,78 @@ mod tests {
         assert!(shot_from(&std::collections::HashMap::new(), "又换了一屏").is_none());
     }
 
+    /// ★这是主人报的"她有时候说的是乱码"那个 bug★
+    ///
+    /// 小字号的中文，Windows OCR 会**把字拆成部件** —— 拆出来的是合法汉字，靠"像不像字"
+    /// 判不出来；但它们都是**独用字**（正常文本里不会单独出现），所以能精确抠掉。
+    #[test]
+    fn broken_ocr_radicals_are_stripped() {
+        // 全部是实测样本（屏幕上是 DSH 的界面，13~15px 正文）
+        assert_eq!(strip_radicals("Memory EvoIve 讠 殳 置"), "Memory EvoIve 置");
+        assert_eq!(strip_radicals("时 亻 制 台 宽"), "时制台宽");
+        assert_eq!(strip_radicals("扌 斤 行"), "斤行");
+        assert_eq!(strip_radicals("氵 肖 息"), "肖息");
+        assert_eq!(strip_radicals("爿 珩 base64"), "珩 base64");
+        // 行尾那个被认成 丷 的引号
+        assert_eq!(strip_radicals("模 式 中 丷"), "模式中");
+        // ★正常内容一个都不许动★（这是这个函数唯一的风险）
+        assert_eq!(strip_radicals("安装与配置"), "安装与配置");
+        assert_eq!(strip_radicals("Visual Studio Code"), "Visual Studio Code");
+        assert_eq!(strip_radicals("设置"), "设置");
+        assert_eq!(strip_radicals(""), "");
+    }
+
+    /// 抠过偏旁的行要真的进到喂给她的那段里
+    #[test]
+    fn compose_strips_radicals_end_to_end() {
+        let lines = vec![
+            "0 露 娜 模 式 \" 1 个 后 台 任 务 运 行 中 丷".to_string(),
+            "爿 珩 base64 有 两 万 多 个 字 符".to_string(),
+        ];
+        let t = compose(&lines, 400);
+        assert!(!t.contains('丷'), "那个引号碎片要没了：{t}");
+        assert!(!t.contains('爿'), "「爿」要没了：{t}");
+        // 剩下的真内容一个字都不能少
+        assert!(t.contains("露娜模式"), "{t}");
+        assert!(t.contains("个后台任务运行中"), "{t}");
+        assert!(t.contains("base64"), "{t}");
+    }
+
+    /// 气泡那句取的是她"亲眼看"回来的**重点**那行
+    #[test]
+    fn subject_from_see_prefers_the_focus_line() {
+        let see = "在做什么：正在查看一个验证窗口。\n重点：release code 7788";
+        assert_eq!(subject_from_see(see).as_deref(), Some("release code 7788"));
+        // 模型没照格式来 → 退回第一行，并且把"在做什么："这个前缀去掉
+        assert_eq!(subject_from_see("在做什么：在看文档").as_deref(), Some("在看文档"));
+        assert_eq!(subject_from_see("随便写了一句").as_deref(), Some("随便写了一句"));
+        // 空的 / 只有一个字的 → 没有主题，别冒泡
+        assert!(subject_from_see("").is_none());
+        assert!(subject_from_see("重").is_none());
+    }
+
+    /// 开着"亲眼看"时**不用 OCR 挑主题** —— 那正是乱码的来源
+    #[test]
+    fn say_for_skips_ocr_subjects_when_seeing_is_on() {
+        let mut cfg = crate::config::AppConfig::default();
+        cfg.screen_say_mode = "local".to_string();
+        let text = "中学电话亭的那面墙，为何成了学生的哭墙？";
+
+        cfg.screen_see = true;
+        let (say, at) = say_for(&cfg, text);
+        assert!(say.is_empty(), "开着亲眼看时不该拿 OCR 挑的主题冒泡：{say}");
+        assert_eq!(at, 0);
+
+        // 关掉"亲眼看"（退回纯 OCR 那条老路）才用本地主题
+        cfg.screen_see = false;
+        let (say2, at2) = say_for(&cfg, text);
+        assert!(say2.contains("中学电话亭"), "{say2}");
+        assert!(at2 > 0);
+    }
+
     /// 她"亲眼看"回来的那段：空的要拒掉，长的要截断（它下一轮就进上下文）
     #[test]
-    fn note_seen_rejects_empty_and_clips_the_rest() {
-        assert!(!note_seen("   ", "512x331"), "空回复不该被记下来");
+    fn note_seen_rejects_empty_and_clips_the_rest() {        assert!(!note_seen("   ", "512x331"), "空回复不该被记下来");
 
         let long = "重点".repeat(SEE_CHARS); // 远超上限
         assert!(note_seen(&long, "512x331"));
