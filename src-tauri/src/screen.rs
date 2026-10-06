@@ -25,8 +25,11 @@ pub const MAX_MINUTES: u32 = 60;
 /// 送进对话的字数范围
 pub const MIN_CHARS: u32 = 60;
 pub const MAX_CHARS: u32 = 800;
-/// 她"亲眼看"回来交的那段最多留多少字 —— 模型输出长度不可控，而它要进下一轮上下文
-pub const SEE_CHARS: usize = 300;
+/// 她"亲眼看"回来交的那段最多留多少字 —— 模型输出长度不可控，而它要进下一轮上下文。
+///
+/// 【为什么是 420】四行（在做什么 / 重点 / 变化 / 他大概在干嘛），每行一句人话。
+/// 卡在 300 的时候最后那行"意图"会被截掉尾巴 —— 而那行恰恰是最有用的。
+pub const SEE_CHARS: usize = 420;
 /// 每轮交给她几张（最近 N 张）。1 = 只看最新那张；上限 4（再多上传和解析就明显拖时间了）
 pub const MIN_BATCH: u32 = 1;
 pub const MAX_BATCH: u32 = 4;

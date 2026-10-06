@@ -224,6 +224,11 @@ console.log('──────────────────────�
 const f1 = first.shot || {};
 const f2 = second.shot || {};
 const t2 = String(f2.text || '');
+// 四行：在做什么 / 重点 / 变化 / 他大概在干嘛。最后那行就是主人要的"意图推测"。
+const seeLines = t2
+  .split('\n')
+  .map((l) => l.trim())
+  .filter(Boolean);
 const checks = [
   ['第一轮一次看了 3 张', f1.count === 3, `count=${f1.count}`],
   ['第一轮全是新上传的（起点干净）', f1.reused === 0, `reused=${f1.reused}`],
@@ -232,7 +237,9 @@ const checks = [
   ['第二轮同样是 3 张', f2.count === 3, `count=${f2.count}`],
   ['★重叠的那两张复用了，没重传★', f2.reused === 2, `reused=${f2.reused}（期望 2）`],
   ['她抄出了重点那行（7788）', /7788/.test(t2), /7788/.test(t2) ? '抄到了' : '没提 7788'],
-  ['她能说出跨张的"变化"这一行', /变化/.test(t2), /变化/.test(t2) ? '有这一行' : '没有'],
+  ['她给了跨张的「变化」', /变化/.test(t2), /变化/.test(t2) ? '有这一行' : '没有'],
+  ['★她给了「意图」那一行（四行齐全）★', seeLines.length >= 4, `${seeLines.length} 行`],
+  ['四行没被截断（她的话完整落地）', t2.length < 420 || !/…$/.test(t2), `${t2.length} 字`],
   ['注入块走的是"亲眼看过"那一版', /你自己看了一眼/.test(block), block.split('\n')[0].slice(0, 40)],
   ['注入块里带上了她抄的那行', /7788/.test(block), /7788/.test(block) ? '在' : '不在'],
 ];
