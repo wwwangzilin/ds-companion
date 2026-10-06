@@ -1072,46 +1072,53 @@
   }
 
   /**
-   * 挑一个"能收图"的模型类型。
+   * 挑一个"能收图"的模型类型 —— 答案是 **`default`**，不是 `vision`。
    *
-   * 【为什么从缓存里读、而不是写死一个 "vision"】这个取值是**服务端下发**的
-   * （`localStorage.__ds_remote_feature_store_model`，实测现在有 default / expert / vision）。
-   * 写死字符串的话它哪天改名了这边就静默失效，而错误信息只说"invalid ref file id"——
-   * 根本看不出是模型不对。宁可多读一眼缓存。
+   * 【这个结论是实测出来的，而且反直觉】本地缓存里确实摆着三个 model_type
+   * （`default` / `expert` / `vision`），看着像"vision 才是收图那个"。
+   * 但传 `"vision"` 会被判成无效配置，上游回一句
+   * `{"biz_code":9,"biz_msg":"invalid ref file id"}` —— 那句话说得很像"id 拼错了"，
+   * 其实跟 id 一个字节的关系都没有。图片理解在 **default（快速模式）** 下就能用。
+   *
+   * 证据：`.verify/probe-real-upload.mjs` 让**上游自己的代码**走了一遍（模拟粘贴上传+发送），
+   * 抓到的真实请求里 `model_type` 就是 `"default"`、`ref_file_ids` 是 `["file-<uuid>"]`。
+   *
+   * 所以这里是"会话默认那个"：能读到缓存就用缓存里的 default，读不到就用字面量。
    */
-  function pickVisionModelType() {
+  function pickFileModelType() {
     try {
       var j = JSON.parse(localStorage.getItem('__ds_remote_feature_store_model') || 'null');
       var list = j && j.entries && j.entries.model_configs && j.entries.model_configs.value;
       if (Array.isArray(list)) {
-        var named = list.filter(function (m) {
-          return m && m.model_type === 'vision';
+        var d = list.filter(function (m) {
+          return m && m.model_type === 'default';
         })[0];
-        if (named) return named.model_type;
-        // 名字变了就退一步：挑带 file_feature 的那个（那才是"能收文件"的标志）
-        var byFeat = list.filter(function (m) {
-          return m && m.file_feature;
-        })[0];
-        if (byFeat) return byFeat.model_type;
+        if (d) return d.model_type;
       }
     } catch (e) {
-      /* 缓存格式变了就退回默认，别让这一步把整条链拖死 */
+      /* 缓存格式变了就退回字面量，别让这一步把整条链拖死 */
     }
-    return 'vision';
+    return 'default';
   }
 
-  /**
-   * 上传回来的是 `file-<uuid>`，但**发请求要的是服务端 id**（那串裸 uuid）。
-   *
-   * 【这是怎么确认的】前端自己的取法：
-   *   `getRefFileIds(e){ return this.nonreactiveStore.getAllServerIds(e) }`
-   * —— 它取的是 **server id**，不是本地那个 file- 开头的。而后端在 signed_path 里
-   * 写的也是 `file_id=<裸 uuid>`，两边对得上。
-   * 用错格式时上游只回一句 `invalid ref file id`，看着像"id 拼错了"，很难猜到是
-   * "本地 id 和服务端 id 不是同一个东西"（这一轮被它带偏了两次）。
-   */
-  function serverFileId(id) {
-    return String(id || '').replace(/^file-/, '');
+  /** 等文件解析完（服务端是**异步**的，实测 2~5 秒） */
+  async function waitFileReady(id, timeoutMs) {
+    var deadline = Date.now() + (timeoutMs || 20000);
+    var last = null;
+    for (;;) {
+      try {
+        var r = await fetchFiles([id]);
+        var list = (r && r.files) || [];
+        last = list.filter(function (f) {
+          return f && f.id === id;
+        })[0] || last;
+      } catch (e) {
+        /* 查不到就当还没好，继续等 */
+      }
+      if (last && (last.status === 'SUCCESS' || last.status === 'FAILED')) return last;
+      if (Date.now() > deadline) return last;
+      await sleep(600);
+    }
   }
 
   /**
@@ -1119,20 +1126,29 @@
    *
    * 【为什么合成一个函数】上传和引用是**必须成对**的：中间任何一步失败，那张图都已经
    * 留在账号里了 —— 分开写只会让人漏掉"上传成功了但没问"这种半截状态。
+   *
+   * 【ref_file_ids 就用上传返回的那个 id，**一个字符都别改**】曾经自作聪明地剥掉
+   * `file-` 前缀（因为 signed_path 里写的是裸 uuid），结果上游 422 直接把话说清楚了：
+   * `ref_file_ids[0]: expect file-xxxxxx`。signed_path 里那个是**下载**用的 id。
+   *
+   * 【必须等解析完，不能拍脑袋 sleep】服务端解析是异步的（实测一张 360×140 的图要 2~5 秒）。
+   * 第一版想当然地 sleep 2.5 秒就发引用，正好落在解析完成之前 —— 上游回一句
+   * `invalid ref file id`，看着像 id 写错了，其实是"文件还没准备好"。
+   * 这个坑连踩了三次，所以这里改成**老实轮询**。
    */
   async function seeImage(blob, prompt, opts) {
     var o = opts || {};
     var up = await uploadFile(blob, o.filename);
-    // 解析要时间（服务端是异步的：status 从 PENDING 到 SUCCESS 实测要几秒）。
-    // 这里不去轮询文件状态 —— 多一次往返、还得写死等待逻辑；等一小会儿直接问，
-    // 图还没好模型就会说它没看到，下一轮再看就是了。
-    if (o.settleMs !== 0) await sleep(o.settleMs || 2500);
+    var info = await waitFileReady(up.id, o.waitMs || 20000);
+    if (info && info.status === 'FAILED') {
+      throw new Error('这张图服务端解析失败：' + JSON.stringify(info).slice(0, 200));
+    }
     var r = await ask(o.kind || 'see', prompt, {
-      refFileIds: [serverFileId(up.id)],
-      modelType: o.modelType || pickVisionModelType(),
+      refFileIds: [up.id],
+      modelType: o.modelType || pickFileModelType(),
       chainTurns: o.chainTurns,
     });
-    return { text: (r && r.text) || '', fileId: up.id, raw: r };
+    return { text: (r && r.text) || '', fileId: up.id, raw: r, ready: info };
   }
 
   function sleep(ms) {

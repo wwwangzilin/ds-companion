@@ -3,7 +3,8 @@
  * 用法：node .verify/probe-vision-ask.mjs <fileId 或裸 uuid>
  */
 const BASE = process.env.DSC_CDP_BASE || 'http://127.0.0.1:9223';
-const RAW_ID = process.argv[2] || 'file-b237b399-e1dd-45d5-beec-bb9ffd56750d';
+const RAW_ID = process.argv[2] || 'file-a652a00f-ac53-4e30-822a-008eff626f61';
+const MODEL = process.argv[3] || 'default';
 const UUID = RAW_ID.replace(/^file-/, '');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -61,8 +62,8 @@ async function findTarget(match, timeoutMs = 40000) {
 }
 
 const main = await findTarget('deepseek.com');
-console.log(`[file] ${RAW_ID}  ->  server id ${UUID}`);
-console.log('[ask] 用裸 uuid 引用，问图上写了什么…');
+console.log(`[file] ${RAW_ID}   model_type=${MODEL}`);
+console.log('[ask] 引用它，问图上写了什么…');
 
 const raw = await evalIn(
   main,
@@ -72,7 +73,7 @@ const raw = await evalIn(
        const r = await util.ask(
          'see',
          '这张图上写着什么？用一句话原样说出来（不要解释、不要客套）。看不到图就回"没看到图"。',
-         { refFileIds: [${JSON.stringify(UUID)}], modelType: 'vision' }
+         { refFileIds: [${JSON.stringify(RAW_ID)}], modelType: ${JSON.stringify(MODEL)} }
        );
        return JSON.stringify({ ok: true, text: (r && r.text) || '', raw: JSON.stringify(r).slice(0, 300) });
      } catch (e) {
