@@ -547,8 +547,10 @@ function setTab(name) {
     })().catch(fail);
   if (name === 'memory') reloadMemories().catch(fail);
   if (name === 'tools') refreshTools().catch(fail);
-  if (name === 'log') startLogFollow();
-  else stopLogFollow();
+  if (name === 'log') {
+    startLogFollow();
+    refreshPet().catch(fail);
+  } else stopLogFollow();
 }
 
 // ── 工具页 ──────────────────────────────────────────────────────────────
@@ -865,6 +867,55 @@ async function refreshAutostart() {
     /* 读不到就当关着 */
   }
 }
+
+// ── 桌宠 ────────────────────────────────────────────────────────────────
+//
+// 它是个**独立窗口**（一个置顶透明的 200×344 小窗），配置改完由壳去开/关/挪位置 ——
+// 这个页面只管把开关画对。别在这里调窗口命令：设置页和桌宠窗口是两个 webview，
+// 页面侧碰不到对方。
+async function refreshPet() {
+  let c;
+  try {
+    c = await invoke('config_get');
+  } catch (e) {
+    return;
+  }
+  const on = !!c.petEnabled;
+  $('pet-enabled').checked = on;
+  $('pet-sub').textContent = on ? '开着 · 置顶透明小窗' : '关着';
+  const corner = String(c.petCorner || 'br').toLowerCase();
+  const btn =
+    document.querySelector(`#pet-corner button[data-v="${corner}"]`) ||
+    document.querySelector('#pet-corner button[data-v="br"]');
+  placePill('pet-corner-pill', btn);
+  window.__DSC_PET_CFG__ = { enabled: on, corner };
+}
+
+$('pet-enabled').addEventListener('change', async (e) => {
+  const want = e.target.checked;
+  try {
+    await patchCfg({ petEnabled: want });
+    toast(want ? '她到桌面上去了 —— 点一下就穿过去，不挡你操作' : '桌宠已收起');
+  } catch (err) {
+    e.target.checked = !want;
+    fail(err);
+  }
+  await refreshPet().catch(fail);
+});
+
+// 角落：点一下就把窗口挪过去（壳在 config_set 里顺手摆位）
+$('pet-corner').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b) return;
+  try {
+    // 【要点】先把滑块摆过去再写配置：写盘是异步的，而主人点完要立刻看到反馈
+    placePill('pet-corner-pill', b);
+    await patchCfg({ petCorner: b.dataset.v });
+  } catch (err) {
+    fail(err);
+  }
+  await refreshPet().catch(fail);
+});
 
 // ── 状态 ────────────────────────────────────────────────────────────────
 // 心状态得看得见：这里既能看（数值 + 趋势曲线），也能改（拖滑块 / 编锚点），

@@ -105,6 +105,19 @@ pub struct AppConfig {
     /// 大约 5 分钟一次、而且只在最近聊过的时候才问。
     #[serde(default = "default_activity_mode")]
     pub activity_mode: String,
+    /// **桌宠**：一个独立的、置顶透明的小窗，把立绘搬到桌面上（切到哪个程序都看得见她）。
+    /// **默认关**。
+    ///
+    /// 【为什么默认关】一个置顶窗口会一直待在屏幕上，而它一出现就没人不知道那是谁 ——
+    /// 与其让人怀疑"我是不是中毒了"，不如让他自己去设置里点开一次。点开之后会记住。
+    #[serde(default)]
+    pub pet_enabled: bool,
+    /// 桌宠待在哪一角：`br` 右下（默认）/ `bl` 左下 / `tr` 右上 / `tl` 左上。
+    ///
+    /// 【为什么不做拖动】无边框 + 透明的窗口在 Windows 上拖动会露出系统画的幽灵边框
+    /// （tauri-apps/tauri#14764）。四个角够用了 —— 它本来就该待在边上。
+    #[serde(default = "default_pet_corner")]
+    pub pet_corner: String,
     /// 虚拟身体层（困倦/体力/饿/心跳）注入进【状态】块
     #[serde(default = "default_true")]
     pub body_enabled: bool,
@@ -171,6 +184,11 @@ fn default_task_mode() -> String {
 
 fn default_activity_mode() -> String {
     "auto".into()
+}
+
+/// 桌宠默认待在右下角 —— 眼睛余光扫得到、写字时又挡不着的地方
+fn default_pet_corner() -> String {
+    "br".into()
 }
 
 fn default_tool_cap() -> u32 {
@@ -270,6 +288,9 @@ impl Default for AppConfig {
             // 【默认关】"她看得见你在用什么软件"这件事得主人自己点头 —— 见字段上的说明
             watch_app: false,
             activity_mode: default_activity_mode(),
+            // 【默认关】桌宠一出现就得让人知道那是谁的东西 —— 见字段上的说明
+            pet_enabled: false,
+            pet_corner: default_pet_corner(),
             body_enabled: true,
             user_state_enabled: true,
             self_review_mode: default_review_mode(),
@@ -576,6 +597,9 @@ mod tests {
         assert!(!d.watch_app, "watch_app 默认必须关（要主人自己点头才开）");
         // 活动默认走模型（`local` 只是"省额度"的退路，不是默认）
         assert_eq!(d.activity_mode, "auto");
+        // ★桌宠也默认关★ —— 一个置顶窗口凭空出现在桌面上，得是主人自己点开的
+        assert!(!d.pet_enabled, "pet_enabled 默认必须关（要主人自己点头才开）");
+        assert_eq!(d.pet_corner, "br", "桌宠默认待在右下角");
     }
 
     /// 端到端：一份坏 config.json 必须被隔离成 `.bad-*`，而不是被下一次保存悄悄覆盖。

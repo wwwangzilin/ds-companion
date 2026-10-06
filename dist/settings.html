@@ -707,6 +707,42 @@
             </button>
           </section>
 
+          <!-- 桌宠 ────────────────────────────────────────────────────
+               一个独立的、置顶透明的窗口，把立绘搬到桌面上（切到 IDE 也看得见她）。
+               它是**全局**的（整个应用只有一个），不属于某个角色 —— 所以放在这一页，
+               和开机自启 / 显示主窗口这些"应用行为"在一起，而不是角色那一页。 -->
+          <section class="editor">
+            <header class="editor-head">
+              <h2>桌宠</h2>
+              <span class="editor-sub" id="pet-sub">关着</span>
+            </header>
+            <label class="switch" title="打开后桌面上会出现一个置顶的透明小窗，里面是她的立绘；切到任何程序都看得见。默认点一下就穿过去，不挡你操作。">
+              <input type="checkbox" id="pet-enabled" />
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">让立绘待在桌面上</span>
+            </label>
+            <div class="gates">
+              <div class="gate">
+                <span class="gate-label">待在哪个角</span>
+                <div class="seg small" id="pet-corner">
+                  <span class="seg-pill" id="pet-corner-pill"></span>
+                  <button data-v="tl">左上</button>
+                  <button data-v="tr">右上</button>
+                  <button data-v="bl">左下</button>
+                  <button data-v="br">右下</button>
+                </div>
+              </div>
+            </div>
+            <p class="hint">
+              她默认<b>点一下就穿过去</b> —— 鼠标落在她身上时，点到的其实是她身后的窗口。
+              这一条是刻意的：一个置顶窗口绝不该挡住你点任何东西。
+            </p>
+            <p class="hint">
+              表情会跟着状态走（困了就眯眼、生气就竖眉毛）；头顶那条小字是她手上正在做的事。
+              关掉这个开关，窗口立刻消失，配置会记住你的选择。
+            </p>
+          </section>
+
           <!-- 运行体检 ────────────────────────────────────────────────
                她"活着但没干活"和"链路断了"看起来一模一样，这块就是用来分开这两件事的。
                数据来自页面侧定期写进日志的 `[health] {...}` 行（页面与设置窗口不同源，

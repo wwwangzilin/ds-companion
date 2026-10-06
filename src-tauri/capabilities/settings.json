@@ -74,6 +74,8 @@
     "allow-dsc-avatar-clear",
     "allow-dsc-avatar-matrix",
     "allow-dsc-roster-touch",
-    "allow-dsc-front-app"
+    "allow-dsc-front-app",
+    "allow-dsc-pet-window",
+    "allow-dsc-pet-state"
   ]
 }

@@ -1,0 +1,114 @@
+/* 桌宠窗口的样式。
+ *
+ * 【第一条规矩】背景必须是透明的 —— 窗口是 transparent + 无边框的，任何一处
+ * `background: #fff`（包括 html/body 的默认白底）都会让她坐在一块白板上。
+ *
+ * 【为什么有呼吸动画】静止的立绘看着像贴纸。5 秒一次的极轻微浮动 + 缩放就够让她
+ * "活着"，幅度必须小（2px / 0.8%）：大了就变成在点头，反而假。
+ */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  /* 她不是可选中的内容，也不是能拖走的图片 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* ── 头顶那条"正在干什么" ────────────────────────────────────────── */
+#bubble {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  display: flex;
+  justify-content: center;
+  transition: opacity 0.35s ease;
+}
+#bubble.off {
+  opacity: 0;
+}
+#bubble span {
+  max-width: 192px;
+  padding: 4px 9px;
+  border-radius: 10px;
+  background: rgba(18, 14, 30, 0.76);
+  color: #e9e5f6;
+  font: 12px/1.35 "Microsoft YaHei", system-ui, sans-serif;
+  /* 最多两行，多了省略号 —— 活动文案本来就不该长 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+/* ── 立绘 ───────────────────────────────────────────────────────── */
+#stage {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 300px;
+  /* 从脚底起伏，头顶才不会飘走 */
+  transform-origin: 50% 100%;
+  animation: breathe 5.2s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-2px) scale(1.008);
+  }
+}
+/* 睡着了：呼吸慢下来、幅度大一点 —— 一眼能看出来她睡了 */
+body.asleep #stage {
+  animation-duration: 7.6s;
+}
+body.asleep #stage {
+  animation-name: breathe-sleep;
+}
+@keyframes breathe-sleep {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-3.5px) scale(1.016);
+  }
+}
+
+.layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* contain + 底部对齐：图和窗口同比例时正好铺满，比例被改坏时也不会拉伸变形 */
+  object-fit: contain;
+  object-position: 50% 100%;
+  opacity: 0;
+  transition: opacity 0.42s ease;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+.layer.on {
+  opacity: 1;
+}
+
+/* 主人把系统设成"减少动态效果"时就别晃了 —— 这是无障碍约定，不是可选项 */
+@media (prefers-reduced-motion: reduce) {
+  #stage,
+  body.asleep #stage {
+    animation: none;
+  }
+  .layer {
+    transition: none;
+  }
+}

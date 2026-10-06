@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pet-local",
+  "description": "桌宠窗口：它只是个画立绘的小窗，所以只给它读一条状态命令的权限。别的一概不给 —— 桌宠不需要改任何东西。",
+  "windows": ["pet"],
+  "permissions": ["core:default", "core:event:default", "allow-dsc-pet-state"]
+}

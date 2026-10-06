@@ -31,6 +31,7 @@ mod digest;
 mod front;
 mod memory;
 mod personas;
+mod pet;
 mod propose;
 mod roster;
 mod state;
@@ -1167,6 +1168,10 @@ fn config_set(app: tauri::AppHandle, cfg: config::AppConfig) -> Result<(), Strin
         cfg.active_persona, cfg.cadence
     ));
     push_config(&app);
+    // 桌宠：配置里的开关 / 角落一改，窗口就该跟着开、关、挪位置。
+    // 两个调用都是幂等的（窗口在就只摆位置，不在就不动），所以每次保存都叫一遍不亏。
+    pet::sync_window(&app);
+    pet::on_corner_changed(&app);
     // 角色 / 暂停状态都可能刚被改过 —— 托盘（勾选与摘要）同步跟上
     refresh_tray(&app);
     Ok(())
@@ -1186,6 +1191,9 @@ static LAST_PUSHED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new
 /// 【页面重新加载会不会漏】不会：页面启动时会自己调 `dsc_get_config` 主动拉一次，
 /// push 只是"改完立刻生效"的快路径。
 fn push_config(app: &tauri::AppHandle) {
+    // 桌宠也跟着看一眼：它的表情和"正在做的事"都来自同一份状态。
+    // 放在**去重之前** —— 桌宠关心的是状态本身，不是"注入 payload 变没变"。
+    pet::ping(app);
     let payload = config::inject_payload();
     let json = match serde_json::to_string(&payload) {
         Ok(j) => j,
@@ -1885,6 +1893,98 @@ fn dsc_avatar_toggle(enabled: Option<bool>) -> Result<bool, String> {
     c.avatar_enabled = enabled.unwrap_or(!c.avatar_enabled);
     config::save(&c)?;
     Ok(c.avatar_enabled)
+}
+
+// ─────────────────────── 桌宠 ───────────────────────
+
+/// 桌宠要的那一份状态（**只给桌宠窗口**）。
+///
+/// 【为什么单开一条命令】桌宠页面是本地页面，但它需要的只有"显示谁、哪张图、正在干嘛"。
+/// 让它自己去调 `state_get`（整份 CharState）+ `dsc_avatar_get` 等于把内部状态全摊开，
+/// 权限也得给两条。收敛成一条只读命令，capability 里只用开一个 allow。
+///
+/// 【为什么表情在壳里算】见 `pet::variant_of` 的说明：页面那份和这份必须同序，
+/// 否则会出现"网页里她是生气的、桌面上她是笑的"。
+#[tauri::command]
+fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
+    let cfg = config::load();
+    let character = personas::active_character_id(cfg.active_persona.as_deref());
+    let st = state::load_state(&character);
+    let variant = pet::variant_of(&st);
+    // 选了"原版"时 character 是空串（没有角色身份）—— 立绘要退回内置那张，
+    // 不然桌宠就是一片空白（状态块可以没有，图不行）。
+    let avatar_id = if character.trim().is_empty() {
+        avatar::BUILTIN_ID.to_string()
+    } else {
+        character.clone()
+    };
+    let view = avatar_view(&avatar_id, &variant);
+    // 立绘的"版本号"：用户传的图会变（换图、删图），内置图不会 —— 用文件 mtime 当版本。
+    // 页面把它和 id/变体一起回传，一样就不必再过一次 IPC：一张 1280×1920 的 PNG
+    // base64 有 1MB 上下，每分钟搬一次纯属浪费。
+    let stamp = if view.source == "user" {
+        std::fs::metadata(avatar::variant_path(&view.id, &view.variant))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let key = format!("{}|{}|{}", view.id, view.variant, stamp);
+    let same = have.as_deref().map(str::trim) == Some(key.as_str());
+    let name = personas::effective_persona(cfg.active_persona.as_deref())
+        .map(|p| p.name)
+        .unwrap_or_default();
+    serde_json::json!({
+        "enabled": cfg.pet_enabled,
+        "corner": pet::normalize_corner(&cfg.pet_corner),
+        "id": view.id,
+        "name": name,
+        "variant": variant,
+        "actual": view.variant,
+        "source": view.source,
+        "stamp": stamp,
+        "key": key,
+        // 一样就是空串 —— 页面沿用手上那张，别重复下载
+        "dataUrl": if same { String::new() } else { view.data_url },
+        "width": view.width,
+        "height": view.height,
+        "activity": st.activity,
+        "mood": st.mood,
+        "asleep": st.body.asleep,
+        "now": now_ms(),
+    })
+}
+
+/// 桌宠窗口此刻的实际样子（**只给设置窗口 / 验收用**）。
+///
+/// 【为什么要它】"置顶"和"点击穿透"是桌宠最要紧的两个属性，而它们只体现在 Win32 的
+/// 扩展样式位里 —— "窗口开出来了"证明不了她不会挡路。有了这条，验收脚本能直接断言
+/// `clickThrough=true`，而不是靠肉眼。
+#[tauri::command]
+fn dsc_pet_window(app: tauri::AppHandle) -> serde_json::Value {
+    let Some(win) = app.get_webview_window(pet::WINDOW_LABEL) else {
+        return serde_json::json!({ "open": false });
+    };
+    let pos = win.outer_position().ok();
+    let size = win.outer_size().ok();
+    let ex = pet::ex_style(&win);
+    serde_json::json!({
+        "open": true,
+        "x": pos.map(|p| p.x).unwrap_or(0),
+        "y": pos.map(|p| p.y).unwrap_or(0),
+        "width": size.map(|s| s.width).unwrap_or(0),
+        "height": size.map(|s| s.height).unwrap_or(0),
+        "alwaysOnTop": win.is_always_on_top().unwrap_or(false),
+        "exStyle": ex,
+        "topmost": ex & pet::EX_TOPMOST != 0,
+        // Tauri 的 set_ignore_cursor_events(true) 在 Windows 上就是加这两位
+        "clickThrough": ex & pet::EX_TRANSPARENT != 0 && ex & pet::EX_LAYERED != 0,
+        "toolWindow": ex & pet::EX_TOOLWINDOW != 0,
+        "corner": pet::normalize_corner(&config::load().pet_corner),
+    })
 }
 
 // ─────────────────────── 用对话同步设置 ───────────────────────
@@ -2593,6 +2693,8 @@ pub fn run() {
             dsc_avatar_clear,
             dsc_avatar_toggle,
             dsc_avatar_matrix,
+            dsc_pet_state,
+            dsc_pet_window,
             dsc_sync_pack,
             dsc_sync_apply,
             trash_prune,
@@ -2734,6 +2836,9 @@ pub fn run() {
                     refresh_tray(&h);
                 });
             }
+
+            // 桌宠：上次开着的话，启动就让她回到桌面上（内部是 spawn，不会在 setup 里卡住）
+            pet::sync_window(app.handle());
 
             if let Some(secs) = autoexit {
                 let handle = app.handle().clone();

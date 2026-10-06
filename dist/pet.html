@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>DS Companion · 桌宠</title>
+    <!--
+      桌宠窗口。它只有一件事要做：把壳里那份状态画出来（谁、哪张差分、正在干什么）。
+
+      【为什么顶上留一条空白】气泡要是浮在立绘上就会盖住她的头。窗口本身是透明的，
+      多留 44px 谁也看不出来 —— 但她的脸完整了。
+    -->
+    <link rel="stylesheet" href="pet.css" />
+  </head>
+  <body>
+    <div id="bubble" class="off"><span id="bubble-text"></span></div>
+    <div id="stage">
+      <img class="layer" id="layer-a" alt="" draggable="false" />
+      <img class="layer" id="layer-b" alt="" draggable="false" />
+    </div>
+    <script src="pet.js"></script>
+  </body>
+</html>
