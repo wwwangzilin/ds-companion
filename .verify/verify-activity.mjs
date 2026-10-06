@@ -369,6 +369,47 @@ await evalIn(
 await sleep(700);
 await shot(settings, 'activity-settings.png');
 
+// ── E. 编辑区布局：新加的字段绝不能把正文挤掉 ──────────────────────
+// 【为什么值得专门验】`.field.grow` 原来写的是 `flex: 1`（basis 0%）—— 正文的高度
+// 全由"剩余空间"决定。新加一个字段就会把它压扁，而且**没有任何报错**、控制台干干净净，
+// 只有肉眼看得见。主人就是这么发现的：「原来的人设设置给挤掉了」。
+const layout = JSON.parse(
+  await evalIn(
+    settings,
+    `(() => {
+       const body = document.getElementById('f-body');
+       const act = document.getElementById('f-activities');
+       const grow = document.querySelector('#tab-persona .field.grow') || document.querySelector('.field.grow');
+       const fields = document.querySelector('#tab-persona .fields') || document.querySelector('.fields');
+       const br = body ? body.getBoundingClientRect() : { height: 0 };
+       const ar = act ? act.getBoundingClientRect() : { height: 0 };
+       const gr = grow ? grow.getBoundingClientRect() : { height: 0 };
+       return JSON.stringify({
+         growH: Math.round(gr.height),
+         bodyH: Math.round(br.height),
+         actH: Math.round(ar.height),
+         winH: innerHeight,
+         overflowPx: fields ? fields.scrollHeight - fields.clientHeight : 0,
+         overflowY: fields ? getComputedStyle(fields).overflowY : '',
+       });
+     })()`,
+  ),
+);
+// 量「正文那一整块」（.field.grow）—— 它才是"有没有被挤掉"的答案；
+// 里面的 textarea 会再少掉标签与间距那 20 来像素。
+check(
+  '★ 正文那一块没被新字段挤掉（整块 ≥ 200px）',
+  layout.growH >= 200,
+  `growH=${layout.growH} 输入框=${layout.bodyH} 窗口高=${layout.winH}`,
+);
+check('★ 正文输入框本身也够用（≥ 170px ≈ 13 行）', layout.bodyH >= 170, `bodyH=${layout.bodyH}`);
+check('活动池那个框自己也看得见（高度 ≥ 60px）', layout.actH >= 60, `actH=${layout.actH}`);
+check(
+  '★ 真挤不下时内容区能滚（不是"压扁了还滚不动"）',
+  layout.overflowPx <= 0 || layout.overflowY === 'auto',
+  `溢出 ${layout.overflowPx}px overflowY=${layout.overflowY}`,
+);
+
 await call(`'persona_delete', { id: '${PID}' }`).catch(() => 0);
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`);

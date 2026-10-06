@@ -1333,9 +1333,17 @@ input[type='range']::-webkit-slider-thumb {
   min-width: 0;
 }
 
+/* 【为什么是 `1 1 auto` 而不是 `1`】`flex: 1` 的 basis 是 **0%** —— 高度完全由"剩余
+   空间"决定。原来字段少（名字/说明/称呼/正文）时够分；加了「她自己会做的事」之后
+   剩余空间被吃掉一截，正文就被压成一条缝 —— 主人报的「原来的人设设置给挤掉了」
+   就是这个。上面 `.fields > *` 那条 `flex: 0 0 auto` 本来是为了防子项被压扁，
+   但这条 (0,2,0) 的特异性更高、把它盖掉了，于是正文成了唯一"可以被压"的那个。
+
+   修法：basis 用 auto（按内容算）+ min-height 保底 —— 宁可让 .fields 滚起来，
+   也不许正文被压没。 */
 .field.grow {
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 220px;
 }
 
 .field > span {
