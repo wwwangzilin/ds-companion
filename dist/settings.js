@@ -659,6 +659,7 @@ async function refreshScreen() {
   $('sc-every').style.opacity = on ? '1' : '0.45';
   $('sc-chars').style.opacity = on ? '1' : '0.45';
   $('sc-say').style.opacity = on ? '1' : '0.45';
+  $('sc-see').style.opacity = on ? '1' : '0.45';
   placePill(
     'sc-every-pill',
     document.querySelector(`#sc-every button[data-v="${c.screenEveryMinutes}"]`),
@@ -670,6 +671,10 @@ async function refreshScreen() {
   placePill(
     'sc-say-pill',
     document.querySelector(`#sc-say button[data-v="${c.screenSayMode || 'local'}"]`),
+  );
+  placePill(
+    'sc-see-pill',
+    document.querySelector(`#sc-see button[data-v="${c.screenSee ? '1' : '0'}"]`),
   );
 
   let s = null;
@@ -698,7 +703,14 @@ async function refreshScreen() {
   const text = (s && s.text) || '';
   $('sc-text').textContent = text;
   $('sc-text').classList.toggle('hidden', !text);
-  window.__DSC_SCREEN__ = { cfg: { on, every: c.screenEveryMinutes, chars: c.screenChars }, snap: s };
+  // 她「亲眼看」回来说的那段（多模态那条路）—— 单摆一块，好和上面那堆 OCR 出来的字对照着看
+  const see = (s && s.see) || '';
+  $('sc-see-text').textContent = see;
+  $('sc-see-text').classList.toggle('hidden', !see);
+  window.__DSC_SCREEN__ = {
+    cfg: { on, every: c.screenEveryMinutes, chars: c.screenChars, see: !!c.screenSee },
+    snap: s,
+  };
 }
 
 function closeScreenConfirm() {
@@ -777,6 +789,19 @@ $('sc-say').addEventListener('click', async (e) => {
   try {
     placePill('sc-say-pill', b);
     await patchCfg({ screenSayMode: b.dataset.v });
+  } catch (err) {
+    fail(err);
+  }
+  await refreshScreen().catch(fail);
+});
+
+// 「让她亲眼看」：把截图交给模型看一眼（花钱那条路，一次约 200 token）
+$('sc-see').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b) return;
+  try {
+    placePill('sc-see-pill', b);
+    await patchCfg({ screenSee: b.dataset.v === '1' });
   } catch (err) {
     fail(err);
   }

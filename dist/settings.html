@@ -664,12 +664,21 @@
                   <button data-v="off">别说</button>
                 </div>
               </div>
+              <div class="gate">
+                <span class="gate-label" title="把缩过的截图交给模型亲眼看一遍。图上会画一个洋红圈标出鼠标位置 —— Windows 的截图不含鼠标指针，不标出来她就不知道你在看哪一块。一次约 200 token，所以你这一屏没变化时不会重复看。">看图</span>
+                <div class="seg small" id="sc-see">
+                  <span class="seg-pill" id="sc-see-pill"></span>
+                  <button data-v="1">让她亲眼看</button>
+                  <button data-v="0">只认字</button>
+                </div>
+              </div>
             </div>
             <div class="row" style="display:flex;gap:8px;align-items:center">
               <code id="sc-now" style="flex:1 1 auto;min-width:0;padding:7px 10px;border-radius:6px;background:rgba(127,127,127,.14);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">还没有看过</code>
               <button class="btn ghost" id="sc-look">现在看一次</button>
             </div>
             <pre class="log-view hidden" id="sc-text" style="max-height:130px"></pre>
+            <pre class="log-view hidden" id="sc-see-text" style="max-height:130px"></pre>
             <p class="hint">
               <b>截图只在内存里</b>：截下来的图一个字节都不落盘（走 WinRT 的内存流，
               实测 <code>mode=memory</code>），认完字当场就没了。识别用的是
@@ -684,6 +693,16 @@
               <b>「顺口说一句」是本地拼的</b>（"主人居然在看「…」"这一类），不花额度；
               那句话会冒在<b>桌宠</b>头顶，超过 5 分钟就不摆了。想改措辞在
               <code>screen.rs</code> 的 <code>local_line</code> 那张表里。
+            </p>
+            <p class="hint">
+              <b>「让她亲眼看」是花钱的那条路</b>：把缩到 512 宽的截图交给模型看一眼，换回
+              「在做什么 + 重点在哪」。一次约 <b>200 token</b>，而且<b>只在你这一屏有变化时</b>才看
+              —— 有没有变由本机 OCR 判断（它零成本），所以盯着同一页看半小时也只花一次的钱。
+            </p>
+            <p class="hint">
+              <b>两条路的分工</b>：本机认字<b>不联网、不花钱</b>，但只吐字、不知道你在看哪一块；
+              亲眼看要<b>把图传到 DeepSeek</b>（走网页版额度）。截图两条路都只在内存里。
+              注意：图传上去之后<b>留在账号里</b> —— 上游没有删除接口，<b>删对话不会把文件删掉</b>。
             </p>
           </section>
 
