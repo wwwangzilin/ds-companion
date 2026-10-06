@@ -16,11 +16,31 @@ use crate::personas;
 /// 内置角色 id。config.persona_id 为 None（= 用内置人设）时，页面用的就是它。
 pub const BUILTIN_ID: &str = "dsh-deepseek";
 
-/// 内置 DeepSeek 娘立绘。
+/// 内置立绘差分表 —— 由 build.rs 扫描 `assets/avatars/deepseek-*.png` 生成。
 ///
 /// 美术素材取自 gal-view 仓库的默认预设场景（MIT，Copyright (c) 2026 Yunicon），
-/// 原始文件名 `DeepSeek娘_立绘.png`（1024×1536）。
-static BUILTIN_PNG: &[u8] = include_bytes!("../assets/avatars/deepseek.png");
+/// 原始那张是 `DeepSeek娘_立绘.png`（1024×1536），这里按表情差分拆开命名。
+include!(concat!(env!("OUT_DIR"), "/avatar_assets.rs"));
+
+/// 表情差分的变体名。
+///
+/// 【这是判定逻辑的一部分，别随手改名】变体名同时是**文件名**（`<id>-<变体>.png`），
+/// 改一个字就等于让已经生成好的图全部对不上号。
+/// 顺序也有意义：`neutral` 是兜底，永远得排第一。
+pub const VARIANTS: &[&str] = &["neutral", "happy", "smug", "angry", "sad", "sleepy", "shy"];
+pub const DEFAULT_VARIANT: &str = "neutral";
+
+pub fn is_variant(v: &str) -> bool {
+    VARIANTS.contains(&v)
+}
+
+/// 内置素材里有没有这个变体（素材还没生成齐时就是没有）。
+fn builtin_png(variant: &str) -> Option<&'static [u8]> {
+    BUILTIN_VARIANTS
+        .iter()
+        .find(|(v, _)| *v == variant)
+        .map(|(_, b)| *b)
+}
 
 /// 单张上限，与 gal-view 的素材库同口径。再大只是拖慢 IPC。
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -54,6 +74,29 @@ pub fn path_of(id: &str) -> std::path::PathBuf {
     dir().join(format!("{}.png", sanitize(id)))
 }
 
+/// 带表情差分的文件名：`<id>-<变体>.png`（单图还是走 `path_of`，两者共存）。
+pub fn variant_path(id: &str, variant: &str) -> std::path::PathBuf {
+    dir().join(format!("{}-{}.png", sanitize(id), sanitize(variant)))
+}
+
+/// 某个角色**已经有**哪些变体的图（设置界面拿它显示"这角色配了几个表情"）。
+pub fn variants_of(id: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for v in VARIANTS {
+        if std::fs::metadata(variant_path(id, v))
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+        {
+            out.push((*v).to_string());
+        }
+    }
+    // 只有单图（没拆差分）时也如实说一声，别让界面显示成"什么都没有"
+    if out.is_empty() && has_user(id) {
+        out.push("single".to_string());
+    }
+    out
+}
+
 /// 是不是「内置角色」（内置 id 或空 id 都算）。
 pub fn is_builtin(id: &str) -> bool {
     id.trim().is_empty() || sanitize(id) == sanitize(BUILTIN_ID)
@@ -66,22 +109,57 @@ pub fn has_user(id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 读一张立绘：用户上传的优先，没有的话内置角色回落到内置素材。
-/// 返回 (字节, 来源标签 "user" | "builtin")。
-pub fn read(id: &str) -> Option<(Vec<u8>, &'static str)> {
+/// 读一张立绘（带表情变体），返回 `(字节, 来源, 实际用的变体)`。
+///
+/// 回退顺序：**用户的该变体 → 用户的单图 → 内置同变体 → 内置 neutral**。
+///
+/// 【为什么这么排】用户自己传的永远优先（他可能只传了一张单图，那所有表情都用它）；
+/// 用户那边没有才落到内置；内置也没有这个变体（素材还没生成齐）就退到 neutral ——
+/// 于是"只画了 neutral + happy 两张"也能正常跑，不会出现空白立绘。
+pub fn read_variant(id: &str, variant: &str) -> Option<(Vec<u8>, &'static str, String)> {
+    let v = if is_variant(variant) {
+        variant
+    } else {
+        DEFAULT_VARIANT
+    };
+    if let Ok(bytes) = std::fs::read(variant_path(id, v)) {
+        if !bytes.is_empty() {
+            return Some((bytes, "user", v.to_string()));
+        }
+    }
     if let Ok(bytes) = std::fs::read(path_of(id)) {
         if !bytes.is_empty() {
-            return Some((bytes, "user"));
+            return Some((bytes, "user", "single".to_string()));
         }
     }
     if is_builtin(id) {
-        return Some((BUILTIN_PNG.to_vec(), "builtin"));
+        if let Some(b) = builtin_png(v) {
+            return Some((b.to_vec(), "builtin", v.to_string()));
+        }
+        if let Some(b) = builtin_png(DEFAULT_VARIANT) {
+            return Some((b.to_vec(), "builtin", DEFAULT_VARIANT.to_string()));
+        }
     }
     None
 }
 
-/// 落盘一张用户上传的图（临时文件 + rename，原子替换）。
+/// 落盘一张用户上传的单图（临时文件 + rename，原子替换）。
 pub fn save(id: &str, bytes: &[u8]) -> Result<(), String> {
+    save_to(path_of(id), bytes)
+}
+
+/// 落盘某个变体的差分：`<id>-<变体>.png`。
+pub fn save_variant(id: &str, variant: &str, bytes: &[u8]) -> Result<(), String> {
+    if !is_variant(variant) {
+        return Err(format!(
+            "不认识的变体：{variant}（可用：{}）",
+            VARIANTS.join(" / ")
+        ));
+    }
+    save_to(variant_path(id, variant), bytes)
+}
+
+fn save_to(path: std::path::PathBuf, bytes: &[u8]) -> Result<(), String> {
     if bytes.is_empty() {
         return Err("空文件".to_string());
     }
@@ -98,19 +176,37 @@ pub fn save(id: &str, bytes: &[u8]) -> Result<(), String> {
     }
     let dir = dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("建目录失败：{e}"))?;
-    let path = path_of(id);
     let tmp = path.with_extension("png.tmp");
     std::fs::write(&tmp, bytes).map_err(|e| format!("写图失败：{e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("替换图失败：{e}"))
 }
 
-/// 删掉用户上传的图并回到内置兜底。返回「本来有没有」。
+/// 删掉用户上传的单图并回到内置兜底。返回「本来有没有」。
 pub fn clear(id: &str) -> Result<bool, String> {
-    let path = path_of(id);
+    remove_if_exists(&path_of(id))
+}
+
+/// 删掉某个变体的差分。
+pub fn clear_variant(id: &str, variant: &str) -> Result<bool, String> {
+    remove_if_exists(&variant_path(id, variant))
+}
+
+/// 把这个角色的**所有**差分删掉（设置里点「清除」时连同单图一起处理）。
+pub fn clear_all_variants(id: &str) -> Result<usize, String> {
+    let mut n = 0usize;
+    for v in VARIANTS {
+        if remove_if_exists(&variant_path(id, v))? {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+fn remove_if_exists(path: &std::path::Path) -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
     }
-    std::fs::remove_file(&path).map_err(|e| format!("删除失败：{e}"))?;
+    std::fs::remove_file(path).map_err(|e| format!("删除失败：{e}"))?;
     Ok(true)
 }
 
@@ -232,8 +328,26 @@ mod tests {
     /// 内置素材必须真的是那张 1024×1536 的立绘 —— 换错文件/被压坏时这条会红。
     #[test]
     fn builtin_png_is_the_expected_sprite() {
-        assert!(BUILTIN_PNG.len() > 100_000, "内置立绘太小了：{}", BUILTIN_PNG.len());
-        assert_eq!(png_size(BUILTIN_PNG), (1024, 1536));
+        let png = builtin_png(DEFAULT_VARIANT).expect("内置素材里必须有 neutral");
+        assert!(png.len() > 100_000, "内置立绘太小了：{}", png.len());
+        assert_eq!(png_size(png), (1024, 1536));
+    }
+
+    /// 变体名是判定逻辑的一部分：改名字 = 已生成好的图全部对不上号。
+    #[test]
+    fn variants_are_stable_and_neutral_first() {
+        assert_eq!(VARIANTS[0], DEFAULT_VARIANT, "neutral 必须排第一（它是兜底）");
+        assert!(is_variant("happy"));
+        assert!(!is_variant("neutral2"));
+        assert!(!is_variant(""));
+        assert!(!is_variant("../etc"));
+    }
+
+    /// 差分文件名要洗过 —— 变体名同样会变成路径的一段。
+    #[test]
+    fn variant_path_is_sanitized() {
+        assert!(variant_path("luna", "../../x").to_string_lossy().contains("luna-"));
+        assert!(variant_path("a/b", "happy").to_string_lossy().ends_with("a-b-happy.png"));
     }
 
     #[test]

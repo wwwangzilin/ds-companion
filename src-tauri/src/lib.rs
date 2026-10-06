@@ -1584,12 +1584,17 @@ struct AvatarView {
     height: u32,
     /// 有没有用户自己传的图（设置窗口据此决定「清除」是否可点）
     has_user: bool,
+    /// 这次实际用的是哪个表情变体（"single" = 只有单图、没拆差分）
+    variant: String,
+    /// 这个角色已经有哪几张（设置界面显示用）
+    variants: Vec<String>,
 }
 
-fn avatar_view(id: &str) -> AvatarView {
+fn avatar_view(id: &str, variant: &str) -> AvatarView {
     let has_user = avatar::has_user(id);
-    match avatar::read(id) {
-        Some((bytes, source)) => {
+    let variants = avatar::variants_of(id);
+    match avatar::read_variant(id, variant) {
+        Some((bytes, source, actual)) => {
             let (width, height) = avatar::png_size(&bytes);
             AvatarView {
                 id: avatar::sanitize(id),
@@ -1599,6 +1604,8 @@ fn avatar_view(id: &str) -> AvatarView {
                 width: if width == 0 { 768 } else { width },
                 height: if height == 0 { 1024 } else { height },
                 has_user,
+                variant: actual,
+                variants,
             }
         }
         None => AvatarView {
@@ -1608,33 +1615,61 @@ fn avatar_view(id: &str) -> AvatarView {
             width: 0,
             height: 0,
             has_user: false,
+            variant: String::new(),
+            variants,
         },
     }
 }
 
-/// 取某个角色的立绘（**页面**用）。id 缺省/空 = 内置角色。
+/// 取某个角色的立绘（**页面**用）。
+///
+/// `id` 缺省/空 = 内置角色；`variant` 缺省/空 = neutral。
+///
+/// 【为什么变体由页面算】心情、困倦、脸红心跳这几样只有页面那份 CFG 里齐 ——
+/// 壳只负责"按名字找图 + 找不到就回退"，判定逻辑不在两边各抄一份。
 #[tauri::command]
-fn dsc_avatar_get(id: Option<String>) -> AvatarView {
+fn dsc_avatar_get(id: Option<String>, variant: Option<String>) -> AvatarView {
     let id = id.unwrap_or_default();
+    let v = variant.unwrap_or_default();
+    let v = if v.trim().is_empty() {
+        avatar::DEFAULT_VARIANT
+    } else {
+        v.as_str()
+    };
     if id.trim().is_empty() {
-        return avatar_view(avatar::BUILTIN_ID);
+        return avatar_view(avatar::BUILTIN_ID, v);
     }
-    avatar_view(&id)
+    avatar_view(&id, v)
 }
 
 /// 给某个角色传一张立绘（**设置窗口**用）。`data` 可以是 dataURL，也可以是裸 base64。
+///
+/// `variant` 缺省 = 覆盖那张单图（老行为）；给了变体就存成 `<id>-<变体>.png`。
 #[tauri::command]
-fn dsc_avatar_set(id: String, data: String) -> Result<AvatarView, String> {
+fn dsc_avatar_set(id: String, data: String, variant: Option<String>) -> Result<AvatarView, String> {
     let bytes = avatar::base64_decode(avatar::strip_data_url(&data))?;
-    avatar::save(&id, &bytes)?;
-    Ok(avatar_view(&id))
+    let v = variant.unwrap_or_default();
+    if v.trim().is_empty() {
+        avatar::save(&id, &bytes)?;
+        return Ok(avatar_view(&id, avatar::DEFAULT_VARIANT));
+    }
+    avatar::save_variant(&id, v.trim(), &bytes)?;
+    Ok(avatar_view(&id, v.trim()))
 }
 
 /// 清掉用户传的图：内置角色回落到内置素材，自建角色变回「没有立绘」。
+///
+/// 给了 `variant` 就只清那一张差分；不给则把单图与**所有差分**一起清掉。
 #[tauri::command]
-fn dsc_avatar_clear(id: String) -> Result<AvatarView, String> {
-    avatar::clear(&id)?;
-    Ok(avatar_view(&id))
+fn dsc_avatar_clear(id: String, variant: Option<String>) -> Result<AvatarView, String> {
+    let v = variant.unwrap_or_default();
+    if v.trim().is_empty() {
+        avatar::clear(&id)?;
+        avatar::clear_all_variants(&id)?;
+    } else {
+        avatar::clear_variant(&id, v.trim())?;
+    }
+    Ok(avatar_view(&id, avatar::DEFAULT_VARIANT))
 }
 
 // ─────────────────────── 用对话同步设置 ───────────────────────

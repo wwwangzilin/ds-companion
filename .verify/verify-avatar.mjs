@@ -445,6 +445,85 @@ check(
   `tag=${settled.breathTag} speaking=${settled.speaking} pose=${settled.pose}`,
 );
 
+// ── 表情差分：变体选择 + 素材缺失时的回落 ────────────────────────────
+const v0 = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check('默认想要 neutral', v0.variant === 'neutral', `variant=${v0.variant}`);
+check('Rust 会回报名单（设置界面与排查都用得上）', Array.isArray(v0.variants), JSON.stringify(v0.variants));
+
+// 内置娘目前只生成了 neutral：请求别的变体必须**回落到 neutral**，而不是空白立绘
+const fb = JSON.parse(
+  await evalIn(
+    main,
+    `window.__TAURI_INTERNALS__.invoke('dsc_avatar_get', { id: null, variant: 'happy' })
+       .then(v => JSON.stringify({ variant: v.variant, source: v.source, len: (v.dataUrl || '').length }))
+       .catch(e => JSON.stringify({ err: String(e) }))`,
+  ),
+);
+check(
+  '★ 缺的变体会回落到 neutral（不会变空白立绘）',
+  !fb.err && fb.variant === 'neutral' && fb.len > 100000,
+  JSON.stringify(fb).slice(0, 140),
+);
+
+const setMood = (p) =>
+  evalIn(
+    main,
+    `(() => { const c = window.__DSC_CFG__(); c.state = c.state || {};
+       c.state.mood = ${JSON.stringify(p.mood)};
+       c.state.valence = ${p.valence}; c.state.arousal = ${p.arousal};
+       c.state.body = Object.assign({}, c.state.body, ${JSON.stringify(p.body)});
+       window.__DSC_AVATAR_REPOSE__(); return true; })()`,
+  );
+
+await setMood({
+  mood: '炸毛',
+  valence: -0.8,
+  arousal: 0.8,
+  body: { asleep: false, sleepiness: 0.1, heartRate: 72, warmth: 0.4 },
+});
+await sleep(800);
+const vAngry = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check(
+  '★ 炸毛时要 angry 那张',
+  vAngry.variant === 'angry',
+  `想要=${vAngry.variant} 实得=${vAngry.usedVariant}`,
+);
+
+await setMood({
+  mood: '雀跃',
+  valence: 0.8,
+  arousal: 0.9,
+  body: { asleep: false, sleepiness: 0.05, heartRate: 74, warmth: 0.5 },
+});
+await sleep(800);
+const vSmug = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check(
+  '★ 心情好又兴奋 → smug（得意）',
+  vSmug.variant === 'smug',
+  `想要=${vSmug.variant} 实得=${vSmug.usedVariant}`,
+);
+
+// 身体层必须盖过心情：明明睡着了，不该还在笑
+await setMood({ mood: '雀跃', valence: 0.8, arousal: 0.9, body: { asleep: true, sleepiness: 0.9 } });
+await sleep(800);
+const vSleep = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check(
+  '★ 睡着了就 sleepy（身体层盖过心情）',
+  vSleep.variant === 'sleepy',
+  `想要=${vSleep.variant}（mood 写的是"雀跃"）`,
+);
+
+// 脸红心跳 = 被撩到 → shy（这条不看心情，只看身体）
+await setMood({
+  mood: '平静',
+  valence: 0.2,
+  arousal: 0.6,
+  body: { asleep: false, sleepiness: 0.1, heartRate: 104, warmth: 0.72 },
+});
+await sleep(800);
+const vShy = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check('★ 心跳快 + 体温高 → shy（被撩到）', vShy.variant === 'shy', `想要=${vShy.variant}`);
+
 // ── 截图（给主人肉眼看的） ────────────────────────────────────────
 try {
   const shot = await send(main, 'Page.captureScreenshot', { format: 'png' });

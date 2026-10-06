@@ -1,4 +1,48 @@
+/// 扫描 `assets/avatars/` 里的内置立绘差分，生成一张 (变体名, 字节) 表。
+///
+/// 【为什么用 codegen 而不是手写 include_bytes!】差分素材是主人**自己生成后丢进来的** ——
+/// 手写的话少一张就编不过（`include_bytes!` 找不到文件直接报错），而扫描式是
+/// 「丢进来就带上，还没生成的自动跳过」，于是只出了 neutral + happy 两张也能立刻用。
+fn emit_avatar_assets() {
+    use std::fmt::Write as _;
+    let dir = std::path::Path::new("assets/avatars");
+    let dest = std::path::Path::new(&std::env::var("OUT_DIR").expect("OUT_DIR 缺失"))
+        .join("avatar_assets.rs");
+
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let Some(name) = e.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            // 只认 `deepseek-<变体>.png`：内置角色的表情差分
+            if name.starts_with("deepseek-") && name.ends_with(".png") {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+
+    let mut code = String::from(
+        "/// 内置立绘差分表 —— 由 build.rs 扫描 assets/avatars/ 生成，**不要手改**。\n\
+         pub static BUILTIN_VARIANTS: &[(&str, &[u8])] = &[\n",
+    );
+    for name in &names {
+        let variant = name.trim_start_matches("deepseek-").trim_end_matches(".png");
+        let _ = writeln!(
+            code,
+            "    ({:?}, include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/avatars/{}\"))),",
+            variant, name
+        );
+    }
+    code.push_str("];\n");
+    std::fs::write(&dest, code).expect("写 avatar_assets.rs 失败");
+    // 目录变了要重跑（新增/替换素材时自动带上）
+    println!("cargo:rerun-if-changed=assets/avatars");
+}
+
 fn main() {
+    emit_avatar_assets();
     // 自定义命令必须显式声明 ACL，否则调用会被拒
     // （远程来源：`probe_report not allowed. Plugin not found`；
     //  一旦有了 app manifest，本地窗口也一样要走 ACL）。

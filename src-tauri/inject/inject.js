@@ -429,6 +429,7 @@
   function paintHud() {
     // 立绘姿态跟着状态走 —— 放最前面：HUD 关掉时立绘照样得会呼吸
     paintAvatarPose();
+    paintAvatarVariant();
     var el = document.getElementById('dsc-hud');
     if (!el) return;
     var s = CFG.state || {};
@@ -1481,6 +1482,12 @@
     on: false,
     breath: null,
     plan: null,
+    /** 现在**想要**哪个表情变体（跟 Rust 的 VARIANTS 同名） */
+    variant: '',
+    /** 实际拿到的是哪个 —— 素材没生成齐时会回落，两者不一样正是排查线索 */
+    usedVariant: '',
+    /** 这个角色已经配了哪几张（Rust 回的，设置界面与排查都用得上） */
+    variants: [],
   };
 
   // 立绘动效的两条硬约束：
@@ -1495,6 +1502,55 @@
 
   function avatarId() {
     return (CFG && CFG.personaId) || '';
+  }
+
+  /** -1..1 归一化 —— valence 是这个量纲，跟 0..1 的那批不一样，别混用。 */
+  function pm1(v, dflt) {
+    var n = Number(v);
+    if (!isFinite(n)) return dflt;
+    if (n > 1) n = n / 100;
+    return Math.max(-1, Math.min(1, n));
+  }
+
+  /**
+   * 按当前状态挑一个表情变体。
+   *
+   * 【名字必须与 Rust 的 avatar::VARIANTS 一一对应】它就是文件名的一部分
+   * （`<id>-<变体>.png`）—— 两边对不上就是"图在那儿但永远用不到"。
+   *
+   * 【判定顺序有讲究】身体层排在心情前面：睡着了、困得睁不开眼、被撩到脸红心跳，
+   * 这几件事跟"心情好不好"没关系；让心情盖过它们，就会出现"明明睡着了还在笑"。
+   */
+  function avatarVariant() {
+    var s = (CFG && CFG.state) || {};
+    var b = s.body || {};
+    if (b.asleep) return 'sleepy';
+    if (avatarUnit(b.sleepiness, 0.2) >= 0.65) return 'sleepy';
+    // 脸红心跳 = 被撩到（出戏那一下的 fluster 会 +22 心跳、+0.18 体温）
+    var hr = Number(b.heartRate) || 0;
+    if (hr >= 96 && avatarUnit(b.warmth, 0.5) >= 0.62) return 'shy';
+
+    var mood = String(s.mood || '');
+    var valence = pm1(s.valence, 0);
+    var arousal = avatarUnit(s.arousal, 0.3);
+    // 先认模型手写的词（它有时比数值网格细），认不出再退到数值
+    if (/炸毛|生气|愤怒|气死|烦躁|烦/.test(mood)) return 'angry';
+    if (/低落|难过|委屈|伤心|闷|沮丧/.test(mood)) return 'sad';
+    if (/雀跃|开心|高兴|兴奋|激动|得意/.test(mood)) return 'smug';
+    if (/满足|不错|还好|平静/.test(mood)) return valence >= 0.3 ? 'happy' : 'neutral';
+
+    if (valence <= -0.3) return arousal >= 0.55 ? 'angry' : 'sad';
+    if (valence >= 0.3) return arousal >= 0.65 ? 'smug' : 'happy';
+    return 'neutral';
+  }
+
+  /** 变体变了就重取图（同一个变体不重复过 IPC —— 一张图 1MB 上下）。 */
+  function paintAvatarVariant() {
+    if (!AVATAR.on) return;
+    var want = avatarVariant();
+    if (AVATAR.variant === want && AVATAR.url) return;
+    AVATAR.variant = want;
+    loadAvatar(true);
   }
 
   function mountAvatar() {
@@ -1525,8 +1581,11 @@
         'object-fit:contain',
         'object-position:bottom left',
         'filter:drop-shadow(0 12px 32px rgba(40,20,80,.55))',
+        // 换表情时淡一下 —— 硬切会闪
+        'transition:opacity .18s ease',
       ].join(';');
       img.addEventListener('load', function () {
+        img.style.opacity = '1';
         if (img.naturalWidth && img.naturalHeight) {
           AVATAR.ratio = img.naturalWidth / img.naturalHeight;
         }
@@ -1542,6 +1601,7 @@
       // 状态是**慢慢变**的（困倦涨、心情落），不该等下一次配置推送才动 —— 15 秒重算一次足够
       setInterval(function () {
         paintAvatarPose();
+        paintAvatarVariant(); // 表情也跟着走（困了会换成 sleepy）
       }, 15000);
       paintAvatar();
     } catch (e) {
@@ -1635,17 +1695,36 @@
   /** 拉一次素材。同一个角色只拉一次（1MB 上下，别每轮都过一遍 IPC）。 */
   function loadAvatar(force) {
     var id = avatarId();
-    if (!force && AVATAR.id === id && AVATAR.url) return;
+    var variant = avatarVariant();
+    if (!force && AVATAR.id === id && AVATAR.url && AVATAR.variant === variant) return;
     AVATAR.id = id;
-    invoke('dsc_avatar_get', { id: id || null })
+    AVATAR.variant = variant;
+    invoke('dsc_avatar_get', { id: id || null, variant: variant })
       .then(function (v) {
-        AVATAR.url = (v && v.dataUrl) || '';
+        var next = (v && v.dataUrl) || '';
         if (v && v.width && v.height) AVATAR.ratio = v.width / v.height;
+        AVATAR.variants = (v && v.variants) || [];
+        // 「想要的」与「实际拿到的」分开记：素材没生成齐时会回落到 neutral，
+        // 混成一个字段的话，日志里分不清"是没切"还是"是没图"。
+        AVATAR.usedVariant = (v && v.variant) || '';
         var img = document.getElementById('dsc-avatar-img');
-        if (img && AVATAR.url) img.src = AVATAR.url;
+        if (img && next) {
+          if (img.src && AVATAR.url && next !== AVATAR.url) {
+            // 换表情：先淡下去，新图 load 之后再淡回来（硬切会闪一下）
+            img.style.opacity = '0';
+            setTimeout(function () {
+              img.src = next;
+            }, 180);
+          } else {
+            img.src = next;
+          }
+        }
+        AVATAR.url = next;
         log(
           'avatar ' + ((v && v.source) || 'none') +
             ' id=' + ((v && v.id) || '-') +
+            ' 变体=' + ((v && v.variant) || '-') +
+            ' 已有[' + AVATAR.variants.join(',') + ']' +
             ' ' + ((v && v.width) || 0) + 'x' + ((v && v.height) || 0),
         );
         paintAvatar();
@@ -2163,6 +2242,9 @@
       natW: img ? img.naturalWidth : 0,
       natH: img ? img.naturalHeight : 0,
       // 动效现状（验收断言用）
+      variant: AVATAR.variant,
+      usedVariant: AVATAR.usedVariant,
+      variants: AVATAR.variants,
       speaking: AVATAR.speaking,
       bubble: AVATAR.bubble,
       talking: AVATAR_TALK.on,
@@ -2181,9 +2263,10 @@
       pose: box ? box.style.transform : '',
     };
   };
-  // 验收用：就地把姿态/呼吸重算一次（状态是脚本临时改的，不等下一次推送）
+  // 验收用：就地把姿态/呼吸/表情重算一次（状态是脚本临时改的，不等下一次推送）
   window.__DSC_AVATAR_REPOSE__ = function () {
     paintAvatarPose();
+    paintAvatarVariant();
     return true;
   };
   // 验收用：模拟"她正在说话"（真发一条消息要花钱 —— 链路归链路、状态机归状态机）
