@@ -747,7 +747,7 @@
     else if (b.sleepiness >= 0.7) bits.push('很困');
     if (b.hunger >= 0.65) bits.push('饿');
     if (b.stamina <= 0.35) bits.push('累');
-    return [
+    var lines = [
       '（后台小任务，不是对话。你正在扮演「' + (CFG.personaName || '她') + '」，保持你的身份与说话习惯。）',
       '',
       '【刚刚发生的事】',
@@ -758,14 +758,20 @@
       '心情：' + (s.mood || '平静') + '｜好感：' + (s.affinity || 0) + '/100｜精力：' +
         Math.round((s.energy === undefined ? 0.8 : s.energy) * 100) + '%' +
         (bits.length ? '｜身体：' + bits.join('、') : ''),
-      '',
-      '【你平时会做的事】（只是风格参考，可以用也可以自己想）',
-      String(CFG.activities || '').trim(),
+    ];
+    // 活动池是**可选**的：没写池子的角色照样能自己想一条 —— 拼一个空的
+    // 「你平时会做的事」只会让她犯迷糊
+    var pool = String(CFG.activities || '').trim();
+    if (pool) {
+      lines.push('', '【你平时会做的事】（只是风格参考，可以用也可以自己想）', pool);
+    }
+    lines.push(
       '',
       '【任务】用**一行、15 字以内**写下你现在手上正在做的事。',
       '要求：接得上上面刚聊的事；第一人称、具体、有画面感；',
       '不要引号、不要解释、不要任何前缀或标记，只输出这一行。',
-    ].join('\n');
+    );
+    return lines.join('\n');
   }
 
   /** 把模型那一行收拾干净：只留第一行、去引号与前缀、截到 40 字（跟壳侧一个口径） */
@@ -819,7 +825,10 @@
    */
   function maybeAskActivity() {
     if (String(CFG.activityMode || 'auto') !== 'auto') return;
-    if (!CFG.activities || !CFG.state || !CFG.state.turns) return;
+    // 【刻意不看活动池】池子只是"本地兜底 + 风格参考" —— 没写池子的角色照样能自己
+    // 想一条（露娜就还没写池子）。把"有没有池子"当闸门的话，主人不填池子 = 这功能
+    // 整个不工作，而这两件事本来就不该绑在一起。
+    if (!CFG.state || !CFG.state.turns) return;
     var block = Math.floor(Date.now() / ACTIVITY_BLOCK_MS);
     if (block === activityAskBlock) return;
     if (!lastTurnInfo || Date.now() - lastTurnInfo.at > 30 * 60 * 1000) return;
@@ -2752,7 +2761,6 @@
       /** 此刻调 maybeAskActivity 会不会真去问（把三道闸摊开，断言才好写） */
       wouldAsk:
         mode === 'auto' &&
-        hasPool &&
         !!s.turns &&
         block !== activityAskBlock &&
         !!lastTurnInfo &&

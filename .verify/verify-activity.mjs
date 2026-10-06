@@ -428,7 +428,24 @@ await evalIn(
 );
 const ask0 = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_ACTIVITY_ASK_STATE__())`));
 check('默认就是「让她自己想」（auto）', ask0.mode === 'auto', `mode=${ask0.mode}`);
-check('★ 三道闸都满足时该问（刚聊过 + 有池子 + 有状态）', ask0.wouldAsk === true, JSON.stringify(ask0));
+check('★ 闸门齐了就该问（刚聊过 + 有状态）', ask0.wouldAsk === true, JSON.stringify(ask0));
+
+// 【这条守着一个真 bug】原来"有没有活动池"也是闸门之一 —— 而露娜还没写池子，
+// 于是这功能对她**完全不工作**（池子只是"本地兜底 + 风格参考"，不该当闸门）。
+const savedPool = await evalIn(main, `window.__DSC_CFG__().activities`);
+await evalIn(main, `(() => { window.__DSC_CFG__().activities = ''; return 1; })()`);
+const askNoPool = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_ACTIVITY_ASK_STATE__())`));
+check(
+  '★ 没写活动池的角色也该问（池子是兜底，不是闸门）',
+  askNoPool.wouldAsk === true && askNoPool.hasPool === false,
+  JSON.stringify(askNoPool),
+);
+check(
+  '★ 池子为空时 prompt 里不出现空的「你平时会做的事」',
+  String(await evalIn(main, `window.__DSC_ACTIVITY_PROMPT__()`)).indexOf('【你平时会做的事】') === -1,
+  '',
+);
+await evalIn(main, `(() => { window.__DSC_CFG__().activities = ${JSON.stringify(savedPool)}; return 1; })()`);
 
 // 切成 local → 一次都不该问（这是"零请求"那条承诺的唯一保证）
 await evalIn(main, `(() => { window.__DSC_CFG__().activityMode = 'local'; return 1; })()`);
