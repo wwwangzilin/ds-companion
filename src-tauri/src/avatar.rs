@@ -18,8 +18,9 @@ pub const BUILTIN_ID: &str = "dsh-deepseek";
 
 /// 内置立绘差分表 —— 由 build.rs 扫描 `assets/avatars/deepseek-*.png` 生成。
 ///
-/// 美术素材取自 gal-view 仓库的默认预设场景（MIT，Copyright (c) 2026 Yunicon），
-/// 原始那张是 `DeepSeek娘_立绘.png`（1024×1536），这里按表情差分拆开命名。
+/// 美术素材取自 gal-view 仓库的默认预设场景（MIT，Copyright (c) 2026 Yunicon）：
+/// 原始那张是 `DeepSeek娘_立绘.png`（1024×1536），现在的差分是 1280×1920 的重绘版，
+/// 按表情拆开命名。
 include!(concat!(env!("OUT_DIR"), "/avatar_assets.rs"));
 
 /// 表情差分的变体名。
@@ -81,15 +82,11 @@ pub fn variant_path(id: &str, variant: &str) -> std::path::PathBuf {
 
 /// 某个角色**已经有**哪些变体的图（设置界面拿它显示"这角色配了几个表情"）。
 pub fn variants_of(id: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for v in VARIANTS {
-        if std::fs::metadata(variant_path(id, v))
-            .map(|m| m.len() > 0)
-            .unwrap_or(false)
-        {
-            out.push((*v).to_string());
-        }
-    }
+    let mut out: Vec<String> = VARIANTS
+        .iter()
+        .filter(|v| has_variant(id, v))
+        .map(|v| (*v).to_string())
+        .collect();
     // 只有单图（没拆差分）时也如实说一声，别让界面显示成"什么都没有"
     if out.is_empty() && has_user(id) {
         out.push("single".to_string());
@@ -110,6 +107,17 @@ pub fn variants_of(id: &str) -> Vec<String> {
 /// 是不是「内置角色」（内置 id 或空 id 都算）。
 pub fn is_builtin(id: &str) -> bool {
     id.trim().is_empty() || sanitize(id) == sanitize(BUILTIN_ID)
+}
+
+/// 用户为**某一个表情**单独传了图没。
+///
+/// 【跟 `has_user` 的区别】`has_user` 问的是"有没有那张单图"，这里问的是"这一格是不是
+/// 他自己传的"。界面要靠后者决定「清掉这张」可不可点 —— 只传了单图时 7 个格子显示的
+/// 都是同一张，但一个都不该能单独清掉。
+pub fn has_variant(id: &str, variant: &str) -> bool {
+    std::fs::metadata(variant_path(id, variant))
+        .map(|m| m.len() > 0)
+        .unwrap_or(false)
 }
 
 /// 有没有用户自己传的图（设置窗口据此决定「清除」按钮是否可点）。
@@ -335,12 +343,35 @@ mod tests {
         assert!(!is_builtin("luna"));
     }
 
-    /// 内置素材必须真的是那张 1024×1536 的立绘 —— 换错文件/被压坏时这条会红。
+    /// 内置素材的不变量：够大、竖构图、**差分之间尺寸一致**、变体名合法。
+    ///
+    /// 【为什么不再写死 1024×1536】素材是美术，会换 —— 这套从 1024×1536 换成了
+    /// 1280×1920。写死尺寸的代价是「换一次素材就得改一次测试」，于是真换素材那次
+    /// 被漏改，这条测试红着躺了好几天（换的是图，不是这段代码，所以谁都没去看它）。
+    /// 测试该守的是「差分能互切」这个**不变量**，而不是某一张图的具体像素。
     #[test]
-    fn builtin_png_is_the_expected_sprite() {
-        let png = builtin_png(DEFAULT_VARIANT).expect("内置素材里必须有 neutral");
-        assert!(png.len() > 100_000, "内置立绘太小了：{}", png.len());
-        assert_eq!(png_size(png), (1024, 1536));
+    fn builtin_sprites_are_consistent() {
+        let neutral = builtin_png(DEFAULT_VARIANT).expect("内置素材里必须有 neutral");
+        assert!(
+            neutral.len() > 100_000,
+            "内置立绘太小了，像是被压过：{} 字节",
+            neutral.len()
+        );
+        let (w, h) = png_size(neutral);
+        assert!(w >= 512 && h >= 768, "内置立绘尺寸可疑：{w}x{h}");
+        // 立绘是竖构图；横过来或接近方形的一般是抓错图了
+        assert!(h > w, "内置立绘该是竖构图，拿到 {w}x{h}");
+        for &(v, bytes) in BUILTIN_VARIANTS {
+            // 文件名拼错（如 deepseek-hapy.png）会被 build.rs 扫进这张表，但
+            // `is_variant` 不认它 —— 页面永远选不中，等于白做一张图还没人发现。
+            assert!(is_variant(v), "内置素材里有不是变体的名字：{v}（拼错了？）");
+            // ★差分铁律★：尺寸不一致的话，切表情时会被看出缩放
+            assert_eq!(
+                png_size(bytes),
+                (w, h),
+                "变体 {v} 与 neutral 尺寸不一致，切表情会跳"
+            );
+        }
     }
 
     /// 变体名是判定逻辑的一部分：改名字 = 已生成好的图全部对不上号。

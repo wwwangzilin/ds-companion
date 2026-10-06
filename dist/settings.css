@@ -1709,3 +1709,66 @@ textarea {
   display: flex;
   gap: 8px;
 }
+
+/* ── 表情格子条 ──────────────────────────────────────────────────
+   一格一个变体，点谁就编辑谁（上传/清除都作用于选中的那格）。
+   状态用左侧那个小圆点的**形状与实心度**区分：实心 = 你传的、半透明 = 内置自带、
+   点线空心 = 还空着（会回落）。不只靠颜色 —— 这三态恰恰是"我到底传没传过"的答案，
+   只靠颜色在低对比屏上读不出来，读错就会重复传图。 */
+.avatar-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.avatar-slot {
+  flex: 1 1 0;
+  min-width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 4px 7px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s, color 0.16s;
+}
+
+.avatar-slot:hover {
+  border-color: var(--line-2);
+  color: var(--text-2);
+}
+
+/* 选中态只动边框与底色：圆点保持自己的语义（不能因为"选中了"就看着像有图） */
+.avatar-slot.on {
+  border-color: var(--v);
+  background: rgba(167, 139, 250, 0.14);
+  color: var(--text);
+}
+
+.avatar-slot-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  box-sizing: border-box;
+}
+
+.avatar-slot.src-user .avatar-slot-dot {
+  background: currentColor;
+}
+
+.avatar-slot.src-builtin .avatar-slot-dot {
+  background: currentColor;
+  opacity: 0.42;
+}
+
+.avatar-slot.src-none .avatar-slot-dot {
+  border-style: dotted;
+}

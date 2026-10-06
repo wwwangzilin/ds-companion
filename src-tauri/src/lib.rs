@@ -1672,6 +1672,68 @@ fn dsc_avatar_clear(id: String, variant: Option<String>) -> Result<AvatarView, S
     Ok(avatar_view(&id, avatar::DEFAULT_VARIANT))
 }
 
+/// 一个表情格子的状态（设置界面画「表情格子」用）—— **只回元数据，不带图**。
+///
+/// 【为什么单独开一个命令】界面要一次看到 7 个变体各自的来源，而 `dsc_avatar_get`
+/// 一次只回一张、单张就是 2MB 的 dataURL —— 发 7 次既慢又把 IPC 灌满。缩略图那张
+/// 大预览仍按需单独取，这里只回答"这一格是什么、图来自哪、清不清得掉"。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AvatarSlot {
+    /// 这一格代表哪个变体
+    variant: String,
+    /// 这一格**显示出来的图**来自哪：user | builtin | none
+    source: String,
+    /// 实际用到的是哪个变体（回落之后；`single` = 靠用户传的单图兜的）
+    actual: String,
+    /// 用户为**这一格**单独传了图没（决定「清掉这张」可不可点）
+    has_user: bool,
+    width: u32,
+    height: u32,
+}
+
+fn avatar_matrix_of(id: &str) -> Vec<AvatarSlot> {
+    avatar::VARIANTS
+        .iter()
+        .map(|v| {
+            let has_user = avatar::has_variant(id, v);
+            match avatar::read_variant(id, v) {
+                Some((bytes, source, actual)) => {
+                    let (width, height) = avatar::png_size(&bytes);
+                    AvatarSlot {
+                        variant: (*v).to_string(),
+                        source: source.to_string(),
+                        actual,
+                        has_user,
+                        width,
+                        height,
+                    }
+                }
+                None => AvatarSlot {
+                    variant: (*v).to_string(),
+                    source: "none".to_string(),
+                    actual: String::new(),
+                    has_user,
+                    width: 0,
+                    height: 0,
+                },
+            }
+        })
+        .collect()
+}
+
+/// 拿某个角色的**全部表情格子**（**设置窗口**用）。
+///
+/// `id` 缺省/空 = 内置角色，跟 `dsc_avatar_get` 一个口径。
+#[tauri::command]
+fn dsc_avatar_matrix(id: Option<String>) -> Vec<AvatarSlot> {
+    let id = id.unwrap_or_default();
+    if id.trim().is_empty() {
+        return avatar_matrix_of(avatar::BUILTIN_ID);
+    }
+    avatar_matrix_of(&id)
+}
+
 /// 立绘总开关（**页面**用）—— 让她在聊天页随手就能关掉自己那张。
 ///
 /// 【为什么不干脆给页面 config_set】那是"能改任意配置"的万能钥匙，远程页面不该拿；
@@ -2387,6 +2449,7 @@ pub fn run() {
             dsc_avatar_set,
             dsc_avatar_clear,
             dsc_avatar_toggle,
+            dsc_avatar_matrix,
             dsc_sync_pack,
             dsc_sync_apply,
             trash_prune,

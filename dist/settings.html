@@ -471,7 +471,7 @@
               <span id="sec-avatar"></span>
               <div class="group-head">
                 <span>角色立绘</span>
-                <em>聊天窗口左下角那张；内置角色自带 DeepSeek 娘，自建角色可以传自己的图</em>
+                <em>聊天窗口左下角那张；一格一个表情，没传的格子会自动回落到「默认」</em>
               </div>
               <div class="avatar-card">
                 <div class="avatar-preview">
@@ -482,11 +482,13 @@
                   <div class="avatar-meta" id="av-meta">—</div>
                   <div class="avatar-actions">
                     <button class="btn ghost small" id="av-pick">选一张 PNG…</button>
-                    <button class="btn ghost small" id="av-clear">清除</button>
+                    <button class="btn ghost small" id="av-clear">清掉这张</button>
+                    <button class="btn ghost small" id="av-clear-all">全部清掉</button>
                   </div>
                   <p class="hint" id="av-hint">—</p>
                 </div>
               </div>
+              <div class="avatar-slots" id="av-slots"></div>
               <input type="file" id="av-file" accept="image/png,.png" style="display:none" />
 
               <span id="sec-addendum"></span>

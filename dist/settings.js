@@ -1526,9 +1526,27 @@ function renderBoundary() {
 
 // ── 立绘（聊天窗口左下角） ─────────────────────────────────────────
 //
-// 一个角色一张图：内置角色走 exe 里编好的 DeepSeek 娘，自建角色传自己的 PNG。
-// 落盘、清洗、大小限制全在 Rust（avatar.rs），这儿只管预览与上传。
+// 一个角色**一套**图：内置角色走 exe 里编好的 DeepSeek 娘，自建角色传自己的 PNG。
+// 下面那排格子就是表情差分：`avVariant` = "正在编辑哪一格"，上传与「清掉这张」都
+// 只作用于它。落盘、清洗、大小限制、**回落的四级顺序**全在 Rust（avatar.rs），
+// 这儿只管预览与选择 —— 判定逻辑不在两边各抄一份。
 let avView = null;
+/** 后端的格子元数据（每个变体一行：来源、实际用到哪张、能不能单独清） */
+let avSlots = [];
+/** 正在编辑哪一格表情 */
+let avVariant = 'neutral';
+
+/** 变体名的中文说法。**只用于界面**：Rust 侧与文件名一律用英文名，别名即失联。 */
+const AV_LABEL = {
+  neutral: '默认',
+  happy: '开心',
+  smug: '得意',
+  angry: '生气',
+  sad: '难过',
+  sleepy: '困倦',
+  shy: '害羞',
+};
+const avLabel = (v) => AV_LABEL[v] || v;
 
 /** 立绘跟着「编辑器里正在编辑的角色」走；没开编辑器就跟着激活角色。 */
 function avatarTargetId() {
@@ -1537,10 +1555,51 @@ function avatarTargetId() {
   return ap && ap !== 'off' ? ap : '';
 }
 
+/** 画那排表情格子。 */
+async function renderAvatarSlots() {
+  const box = $('av-slots');
+  if (!box) return;
+  try {
+    avSlots = await invoke('dsc_avatar_matrix', { id: avatarTargetId() || null });
+  } catch (e) {
+    avSlots = [];
+  }
+  // 换了角色之后，原来选中的那一格可能压根不存在 → 拉回默认
+  if (!avSlots.some((s) => s.variant === avVariant)) avVariant = 'neutral';
+  box.innerHTML = '';
+  for (const s of avSlots) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `avatar-slot src-${s.source}${s.variant === avVariant ? ' on' : ''}`;
+    b.dataset.variant = s.variant;
+    b.title =
+      s.source === 'user'
+        ? `${avLabel(s.variant)}：你传的图`
+        : s.source === 'builtin'
+          ? `${avLabel(s.variant)}：内置素材自带`
+          : `${avLabel(s.variant)}：还空着，会回落成「${avLabel(s.actual || 'neutral')}」`;
+    const dot = document.createElement('span');
+    dot.className = 'avatar-slot-dot';
+    const name = document.createElement('span');
+    name.textContent = avLabel(s.variant);
+    b.append(dot, name);
+    b.addEventListener('click', () => {
+      avVariant = s.variant;
+      renderAvatar();
+    });
+    box.appendChild(b);
+  }
+}
+
 async function renderAvatar() {
   if (!$('av-img')) return;
+  await renderAvatarSlots();
+  const slot = avSlots.find((s) => s.variant === avVariant) || {};
   try {
-    avView = await invoke('dsc_avatar_get', { id: avatarTargetId() || null });
+    avView = await invoke('dsc_avatar_get', {
+      id: avatarTargetId() || null,
+      variant: avVariant,
+    });
   } catch (e) {
     $('av-hint').textContent = '读不出来：' + e;
     return;
@@ -1555,14 +1614,26 @@ async function renderAvatar() {
     $('av-img').style.display = 'none';
     $('av-empty').style.display = 'flex';
   }
-  const who = v.source === 'builtin' ? '内置 DeepSeek 娘' : v.source === 'user' ? '你传的图' : '没有';
-  $('av-meta').textContent = who + (v.width ? '　' + v.width + '×' + v.height : '');
-  $('av-clear').disabled = !v.hasUser;
-  $('av-hint').textContent = v.hasUser
-    ? '这张是你传的；清除之后就回落到内置素材'
-    : v.source === 'builtin'
-      ? '内置素材：来自 gal-view 默认预设的 DeepSeek 娘立绘（MIT）'
-      : '传一张 PNG（要透明背景）就会出现在聊天窗口左下角';
+  // 「来源」要说清是三件事：你专门给这格传的 / 内置自带 / 靠单图兜的
+  const who =
+    v.source === 'builtin'
+      ? '内置素材'
+      : v.source === 'user'
+        ? slot.actual === 'single'
+          ? '借用你传的单图'
+          : '你传的这张'
+        : '没有';
+  $('av-meta').textContent =
+    `「${avLabel(avVariant)}」　${who}` + (v.width ? `　${v.width}×${v.height}` : '');
+  $('av-clear').disabled = !slot.hasUser;
+  $('av-clear-all').disabled = !avSlots.some((s) => s.hasUser);
+  $('av-hint').textContent = slot.hasUser
+    ? `「${avLabel(avVariant)}」这张是你传的；清掉它就回落到默认那张`
+    : slot.actual === 'single'
+      ? `「${avLabel(avVariant)}」没有单独的图，现在借用你传的那张单图`
+      : v.source === 'builtin'
+        ? `「${avLabel(avVariant)}」是内置素材自带的（MIT）；想换就选一张 PNG 覆盖它`
+        : '这一格还空着，传一张 PNG（要透明背景）就有了';
 }
 
 async function uploadAvatar(file) {
@@ -1575,9 +1646,13 @@ async function uploadAvatar(file) {
       r.onerror = () => rej(r.error || new Error('读文件失败'));
       r.readAsDataURL(file);
     });
-    await invoke('dsc_avatar_set', { id: avatarTargetId(), data: dataUrl });
+    await invoke('dsc_avatar_set', {
+      id: avatarTargetId(),
+      data: dataUrl,
+      variant: avVariant,
+    });
     await renderAvatar();
-    toast('立绘换好了（聊天窗口刷新一下就生效）');
+    toast(`「${avLabel(avVariant)}」换好了（聊天窗口刷新一下就生效）`);
   } catch (e) {
     fail(e);
   }
@@ -2203,9 +2278,20 @@ $('av-file').addEventListener('change', (e) => {
 });
 $('av-clear').addEventListener('click', async () => {
   try {
+    await invoke('dsc_avatar_clear', { id: avatarTargetId(), variant: avVariant });
+    await renderAvatar();
+    toast(`「${avLabel(avVariant)}」清掉了`);
+  } catch (e) {
+    fail(e);
+  }
+});
+$('av-clear-all').addEventListener('click', async () => {
+  const n = avSlots.filter((s) => s.hasUser).length;
+  if (!confirm(`把这 ${n} 张你传的立绘全清掉？\n内置素材不受影响。`)) return;
+  try {
     await invoke('dsc_avatar_clear', { id: avatarTargetId() });
     await renderAvatar();
-    toast('立绘清掉了');
+    toast('立绘全清掉了');
   } catch (e) {
     fail(e);
   }

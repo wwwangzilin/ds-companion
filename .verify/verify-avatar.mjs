@@ -316,7 +316,11 @@ check('设置界面有立绘卡片', ui.hasCard === true, JSON.stringify(ui).sli
 check('卡片里的预览真的解码出了内置立绘', ui.natW === 1280, `natW=${ui.natW}`);
 check(
   '卡片标了来源与尺寸',
-  /内置 DeepSeek 娘/.test(ui.meta || '') && /1280×1920/.test(ui.meta || ''),
+  // 【为什么不再要求「内置 DeepSeek 娘」】卡片上加了一排表情格子之后，这条
+  // 文字改说「**当前选中的那一格** + 图来自哪」（角色身份由页签和编辑器决定，
+  // 不必在这儿重复）。"内置素材"这个关键区分还在，它才是这条断言要守的东西
+  // —— 别把"内置"和"你传的"看混，那是主人唯一需要一眼分辨的事。
+  /内置素材/.test(ui.meta || '') && /1280×1920/.test(ui.meta || ''),
   String(ui.meta),
 );
 check('没传图时「清除」是禁用的', ui.clearDisabled === true, `disabled=${ui.clearDisabled}`);
