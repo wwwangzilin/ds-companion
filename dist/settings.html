@@ -579,6 +579,38 @@
             </p>
           </section>
 
+          <!-- 她看得见你在用什么软件（前台窗口）—— **默认关**，因为这一层读的不是"聊天内容"，
+               而是"你在干什么"，哪怕只是个进程名也已越过那条线。开关旁边就是此刻的读数：
+               隐私开关最忌讳"开了但不知道它到底读到了什么"。 -->
+          <section class="editor">
+            <header class="editor-head">
+              <h2>她看得见你在用什么软件</h2>
+              <span class="editor-sub" id="tl-front-sub">关着</span>
+            </header>
+            <label class="switch" title="打开后她每一轮会知道你在用哪个软件（只报进程名，从不读窗口标题，只在本机处理）">
+              <input type="checkbox" id="tl-front" />
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">让她知道你在用什么软件</span>
+            </label>
+            <div class="row" style="display:flex;gap:8px;align-items:center;margin-top:10px">
+              <code id="tl-front-now" style="flex:1 1 auto;min-width:0;padding:7px 10px;border-radius:6px;background:rgba(127,127,127,.14);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</code>
+              <button class="btn ghost" id="tl-front-probe">现在看一眼</button>
+            </div>
+            <p class="hint">
+              <b>只读进程名</b>（<code>Code.exe</code> 这种），<b>从不读窗口标题</b> ——
+              标题里什么都有：网页在讲什么、邮件主题、文件名、密码管理器里那条记录叫什么。
+              要报标题就得维护一串永远不全的黑名单，那不如不报。
+            </p>
+            <p class="hint">
+              密码管理器 / 银行 / 支付类进程<b>连名字都不给</b>，一律回一句"在别的软件里"。
+              数据只在这台机器上，一个字节都不外发（她本来就跑在本机）。
+            </p>
+            <p class="hint">
+              IDE 与终端算"你在干正事"：配合「干活时安静」，写代码时她会自己收着点，不刷存在感。
+              浏览器<b>不算</b> —— 查资料和刷视频是同一个 <code>chrome.exe</code>，说明不了任何事。
+            </p>
+          </section>
+
           <!-- 写/改/跑工具：她唯一能**改**东西（以及跑命令）的能力。两层门 ——
                这个开关决定"她知不知道有这回事"，每次调用还要主人在聊天窗口里点确认。 -->
           <section class="editor">

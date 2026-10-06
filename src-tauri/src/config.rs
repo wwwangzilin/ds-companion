@@ -89,6 +89,14 @@ pub struct AppConfig {
     /// 页面左下角的角色立绘（内置 DeepSeek 娘；自建角色可在设置里传自己的图）
     #[serde(default = "default_true")]
     pub avatar_enabled: bool,
+    /// **让她知道你在用什么软件**（前台窗口的进程名）。**默认关**。
+    ///
+    /// 【为什么默认关】这一层读的是"他在干什么"。哪怕只是个进程名，也已经越过了
+    /// "聊天内容"那条线 —— 所以它得是主人自己点头开的。开了之后也只报**进程名**、
+    /// 绝不报窗口标题（标题里有网页标题、邮件主题、文件名；要报它就得维护一串永远
+    /// 不全的黑名单）。敏感进程（密码管理器那类）连名字都不给。只在本机处理。
+    #[serde(default)]
+    pub watch_app: bool,
     /// 「她手上正在做的事」从哪来：`local` = 只从人设的活动池里挑（零成本）；
     /// `auto` = 先让模型按当前场景写一条，拿不到就退回本地池。
     ///
@@ -259,6 +267,8 @@ impl Default for AppConfig {
             ooc_token: String::new(),
             hud_enabled: true,
             avatar_enabled: true,
+            // 【默认关】"她看得见你在用什么软件"这件事得主人自己点头 —— 见字段上的说明
+            watch_app: false,
             activity_mode: default_activity_mode(),
             body_enabled: true,
             user_state_enabled: true,
@@ -562,6 +572,8 @@ mod tests {
         assert!(d.sense_daily_cap > 0, "模型感知要有当日闸");
         assert!(d.hud_enabled);
         assert!(d.avatar_enabled);
+        // ★"知道你在用什么软件"必须默认关★ —— 它越过了"聊天内容"那条线
+        assert!(!d.watch_app, "watch_app 默认必须关（要主人自己点头才开）");
         // 活动默认走模型（`local` 只是"省额度"的退路，不是默认）
         assert_eq!(d.activity_mode, "auto");
     }

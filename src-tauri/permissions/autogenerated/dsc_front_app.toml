@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-front-app"
+description = "Enables the dsc_front_app command without any pre-configured scope."
+commands.allow = ["dsc_front_app"]
+
+[[permission]]
+identifier = "deny-dsc-front-app"
+description = "Denies the dsc_front_app command without any pre-configured scope."
+commands.deny = ["dsc_front_app"]

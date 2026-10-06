@@ -304,6 +304,9 @@
     // 这两块是**背景**不是任务：Rust 那边已经把「可以提也可以不提」写进块尾了
     addBlock('他手上的东西', TURN.recent);
     addBlock('同住', TURN.peer);
+    // 【他此刻】**她自己看到的**（前台窗口，要 watch_app 开着）—— 和上面两块一样是背景。
+    // 块尾那句"可以顺口带一句，但别每次都报"由 Rust 侧写死在正文里（addBlock 不管 k）。
+    addBlock('他此刻', TURN.front);
     addBlock('边界', boundaryText());
     // ★参数名是 `rawText`（augment 的形参），不是 rawBody★ —— 写成 rawBody 会让
     // augment 每轮抛 ReferenceError，而这等于**整条注入链断掉**（比少注一块严重得多）。
@@ -1081,6 +1084,8 @@
         TURN.pending = r.pendingText || '';
         TURN.recent = r.recentText || '';
         TURN.peer = r.peerText || '';
+        // 「他此刻」：只报进程名（Rust 侧已经把敏感进程打码、且从不读窗口标题）
+        TURN.front = r.frontText || '';
         // 本地判定贴着门槛 → 请模型再判一次，结果覆盖本地。只影响**下一轮**的注入
         //（本轮请求早发出去了，这也是任务模式本来的粒度）。
         if (r.wantTaskJudge) judgeTaskIntent(userText);
@@ -1161,7 +1166,12 @@
   // 【为什么不能塞进 CFG】`push_config` 一来就是**整份换掉** CFG（配置一变就推一份新的），
   // 那三个字段不在 payload 里，会被一起冲成 undefined —— 实测就是这么丢的：刚拿到
   // 场景/关系，一改配置（比如设个雷点）它们就没了，而界面上什么异常都看不到。
-  var TURN = { scene: '', relation: '', pending: '', recent: '', peer: '' };
+  var TURN = { scene: '', relation: '', pending: '', recent: '', peer: '', front: '' };
+
+  // 【为什么把它挂到页面】这几块文本平时只在"主人真发了一条"之后才被填上，而它们是注入
+  // 内容的一半 —— 靠真聊一轮来验，就要登录态 + 真的花一次额度。所以给验收脚本一个只读看板，
+  // 驱动入口用现成的 __DSC_REPORT_TURN__（见下面），路子与 __DSC_WRITE_DIARY__ 一致。
+  window.__DSC_TURN__ = TURN;
 
   var lastActivityAt = Date.now();
   var proactiveFiredForIdle = false;

@@ -593,6 +593,40 @@ async function refreshTools() {
   $('tl-log').textContent = rows.length ? rows.join('\n') : '（还没有调用记录）';
   $('tl-log-sub').textContent = rows.length ? `最近 ${rows.length} 条` : '';
   window.__DSC_TOOLS_INFO__ = info;
+  // 前台窗口感知不是"工具"，但它是同一类东西 —— 她对外部世界的一只眼睛，所以放在这页
+  await refreshFront().catch(() => {});
+}
+
+/**
+ * 她看得见你在用什么软件（前台窗口）────────────────────────────────────
+ *
+ * 【为什么读数就摆在开关旁边】隐私开关最忌讳"开着，但它到底读到了什么我不知道"。
+ * 这里直接问一次真实读数并显示出来 —— 看得见才敢开。读数里**没有窗口标题**，
+ * 因为那一层从来就没读过（见 front.rs 顶部的说明）。
+ *
+ * 【为什么不轮询】点一下看一眼就够。自动轮询会让设置窗口一直戳系统 API，
+ * 而且主人切窗口时读数会闪个不停，反倒像在盯人。
+ */
+async function refreshFront() {
+  const c = await invoke('config_get');
+  const on = !!c.watchApp;
+  $('tl-front').checked = on;
+  if (!on) {
+    $('tl-front-sub').textContent = '关着';
+    $('tl-front-now').textContent = '关着 —— 她不知道你在用什么';
+    window.__DSC_FRONT__ = { enabled: false };
+    return;
+  }
+  $('tl-front-sub').textContent = '开着 · 只报进程名';
+  try {
+    const r = await invoke('dsc_front_app');
+    // 这一行就是她**实际会看到**的那句话，一字不差（含"在别的软件里"那种被打码的）
+    $('tl-front-now').textContent = r.text || '（读不到）';
+    window.__DSC_FRONT__ = r;
+  } catch (e) {
+    $('tl-front-now').textContent = '读不到：' + (e && e.message ? e.message : e);
+    window.__DSC_FRONT__ = { enabled: true, error: String(e) };
+  }
 }
 
 // ── 日志页 ──────────────────────────────────────────────────────────────
@@ -2436,6 +2470,25 @@ $('tl-write').addEventListener('change', async (e) => {
   }
   await refreshTools().catch(fail);
 });
+// 前台窗口感知 —— **默认关**，而且必须主人自己点头才开。
+// 这一层读的不是聊天内容，是"他在干什么"，性质不同，所以不给任何默认值。
+$('tl-front').addEventListener('change', async (e) => {
+  const want = e.target.checked;
+  try {
+    await patchCfg({ watchApp: want });
+    toast(
+      want
+        ? '开了 —— 她只知道你在用哪个软件，看不到里面的内容'
+        : '关了 —— 她不会再看你的屏幕'
+    );
+  } catch (err) {
+    e.target.checked = !want;
+    fail(err);
+  }
+  await refreshFront().catch(fail);
+});
+$('tl-front-probe').addEventListener('click', () => refreshFront().catch(fail));
+
 /** 设置页补处理：卡片丢了（页面刷新/关掉了）也能决定，只是不会有回灌 */
 async function decidePending(allow) {
   const p = window.__DSC_PENDING__;

@@ -28,6 +28,7 @@ mod config;
 // 单元测试里没法换数据目录，而 `DSC_DATA_DIR` 是进程级的）
 pub mod diary;
 mod digest;
+mod front;
 mod memory;
 mod personas;
 mod propose;
@@ -360,6 +361,8 @@ struct TurnReport {
     recent_text: String,
     /// 【同住】块正文（空 = 不加）—— 这台机器上还有谁在
     peer_text: String,
+    /// 【他此刻】块正文（空 = 不加）—— 他在用什么软件（要 `watch_app` 开着）
+    front_text: String,
     /// 通路自检的告警（空 = 没看出问题）。
     ///
     /// 【为什么要跟着每轮回来】"机制没坏、通路断了"这类问题（情绪冻结、饿着没人管）
@@ -498,6 +501,7 @@ fn dsc_turn_report(
             pending_text: String::new(),
             recent_text: String::new(),
             peer_text: String::new(),
+            front_text: String::new(),
             vitals: Vec::new(),
         };
     }
@@ -507,7 +511,27 @@ fn dsc_turn_report(
     // ⓪ 任务模式：先判"现在是不是在办正事" —— 它会影响后面三处
     // （好感保护 / 状态块压缩 / 感知门控），所以必须排在最前面
     let task_sig = state::sense_task(&user_text);
-    let (task_mode, task_changed) = step_task_mode(&character, &cfg.task_mode, &task_sig);
+    let (mut task_mode, mut task_changed) = step_task_mode(&character, &cfg.task_mode, &task_sig);
+
+    // ⓪′ 他此刻在用什么软件（**默认关**，配置里点头才开）
+    //
+    // 【为什么它比对话文本准】上面那个 `sense_task` 是从**他说的话**里猜"在不在干活"；
+    // 前台进程是**直接看得见**的。两件事互补：他一句"这个 bug 怎么修"会被判成干活，
+    // 但他在 IDE 里坐了三个小时、一句话没说的时候，只有前台知道。
+    //
+    // 【为什么只在 auto 时并入】`task_mode = "off"` 是主人明确说"别判我" —— 那就不该
+    // 被前台信号绕着走。
+    let front_app = if cfg.watch_app { front::current() } else { None };
+    let front_since = front_app.as_ref().map(|a| front::note(a, now)).unwrap_or(0);
+    if cfg.task_mode == "auto" {
+        if let Some(a) = front_app.as_ref() {
+            if a.means_busy() && !task_mode {
+                task_mode = true;
+                task_changed = true;
+                shell_log(&format!("[task] 前台是 {} —— 直接当在干活", a.exe));
+            }
+        }
+    }
 
     // ① 角色：情绪 → 心理状态；② 身体：先补时间流逝，再按这轮的反应推进
     let mut st = state::load_state(&character);
@@ -630,6 +654,15 @@ fn dsc_turn_report(
     let recent_text = render_recent_block(&tools::recent_files_cached(6 * 60 * 60 * 1000, 5));
     // 「她不是一个人在这台机器上」：别人最近还在不在、当时在干嘛
     let peer_text = roster::render_peer_block(&roster::load(), &character, now);
+    // 【他此刻】—— 他在用什么软件。`watch_app` 关着时 `front_app` 是 None，这里就是空串，
+    // 一个字节都不注入。
+    let front_text = match front_app.as_ref() {
+        Some(a) => format!(
+            "【他此刻】他正在 {}。\n【这是你自己看到的，不是他告诉你的。可以顺口带一句，但别每次都报 —— 也别显得像在盯着他。】",
+            front::describe(a, front_since)
+        ),
+        None => String::new(),
+    };
 
     shell_log(&format!(
         "[state] turn={} mood={} v={:.2} aff={} energy={:.2} | body 困={:.2} 体={:.2} 饿={:.2} hr={}{} | user {} 精力={:.2} 投入={:.2}{}{} | hits={} wantModel={} | task={}{}",
@@ -701,6 +734,7 @@ fn dsc_turn_report(
         pending_text,
         recent_text,
         peer_text,
+        front_text,
         vitals,
     }
 }
@@ -753,6 +787,42 @@ fn dsc_roster_touch(
         &mood.unwrap_or_default(),
         now_ms(),
     )
+}
+
+/// 现在她看到他在用什么软件（**设置界面**用）。
+///
+/// 【为什么设置里要能看见】开了这个开关之后总得能验证它读到了什么 —— 不然
+/// "她怎么知道我在用 Code" 这件事永远是个黑盒。这里回的是**她真正会拿去用的那个
+/// 字符串**（敏感进程已经过滤过一遍），主人一眼就能看出有没有漏。
+///
+/// 注意它**只给设置窗口**（capabilities 里也只加在 settings 那份）：远程页面不需要读这个。
+#[tauri::command]
+fn dsc_front_app() -> serde_json::Value {
+    let cfg = config::load();
+    if !cfg.watch_app {
+        return serde_json::json!({ "enabled": false, "text": "" });
+    }
+    match front::current() {
+        Some(a) => {
+            let since = front::note(&a, now_ms());
+            serde_json::json!({
+                "enabled": true,
+                "exe": a.exe,
+                "kind": a.kind,
+                "busy": a.means_busy(),
+                "sinceMs": since,
+                "text": front::describe(&a, since),
+            })
+        }
+        None => serde_json::json!({
+            "enabled": true,
+            "exe": "",
+            "kind": "other",
+            "busy": false,
+            "sinceMs": 0,
+            "text": "读不到（前台可能是系统窗口，或者权限不够）",
+        }),
+    }
 }
 
 #[tauri::command]
@@ -2499,6 +2569,7 @@ pub fn run() {
             dsc_diary_save,
             dsc_turn_report,
             dsc_roster_touch,
+            dsc_front_app,
             dsc_sense_reserve,
             dsc_sense_apply,
             dsc_proactive,
