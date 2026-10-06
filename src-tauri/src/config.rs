@@ -126,6 +126,20 @@ pub struct AppConfig {
     /// （tauri-apps/tauri#14764）。四个角够用了 —— 它本来就该待在边上。
     #[serde(default = "default_pet_corner")]
     pub pet_corner: String,
+    /// **让她瞄一眼你的屏幕**（截前台窗口 → OCR 认字）。**默认关**。
+    ///
+    /// 【为什么这一条的门比别的都厚】它读的已经不是"你在用什么软件"，而是**屏幕上的字** ——
+    /// 网页在讲什么、文档写了什么、聊天框里谁在说话，全在上面。所以除了默认关，
+    /// 设置页里打开它还要**勾选 + 弹窗确认**，截图全程不落盘，敏感软件前台时根本不截。
+    /// 详见 `screen.rs` 顶上那段。
+    #[serde(default)]
+    pub screen_watch: bool,
+    /// 隔多久看一眼（分钟）。1 是最激进的档 —— 一次成本约 1.5 秒 CPU。
+    #[serde(default = "default_screen_every")]
+    pub screen_every_minutes: u32,
+    /// 一次最多喂给她多少字（送进对话的那一段）
+    #[serde(default = "default_screen_chars")]
+    pub screen_chars: u32,
     /// 虚拟身体层（困倦/体力/饿/心跳）注入进【状态】块
     #[serde(default = "default_true")]
     pub body_enabled: bool,
@@ -197,6 +211,16 @@ fn default_activity_mode() -> String {
 /// 桌宠默认待在右下角 —— 眼睛余光扫得到、写字时又挡不着的地方
 fn default_pet_corner() -> String {
     "br".into()
+}
+
+/// 屏幕感知的默认间隔：5 分钟（够勤，又不至于一直在截屏）
+fn default_screen_every() -> u32 {
+    5
+}
+
+/// 一次喂给她多少字：240（一屏 OCR 出来一千多字，全给就是烧额度）
+fn default_screen_chars() -> u32 {
+    240
 }
 
 fn default_tool_cap() -> u32 {
@@ -301,6 +325,10 @@ impl Default for AppConfig {
             // 【默认关】桌宠一出现就得让人知道那是谁的东西 —— 见字段上的说明
             pet_enabled: false,
             pet_corner: default_pet_corner(),
+            // 【默认关】看屏幕上的字是这一层里最重的一件事 —— 见字段上的说明
+            screen_watch: false,
+            screen_every_minutes: default_screen_every(),
+            screen_chars: default_screen_chars(),
             body_enabled: true,
             user_state_enabled: true,
             self_review_mode: default_review_mode(),
@@ -612,6 +640,10 @@ mod tests {
         // ★桌宠也默认关★ —— 一个置顶窗口凭空出现在桌面上，得是主人自己点开的
         assert!(!d.pet_enabled, "pet_enabled 默认必须关（要主人自己点头才开）");
         assert_eq!(d.pet_corner, "br", "桌宠默认待在右下角");
+        // ★看屏幕内容也必须默认关★ —— 它读的是屏幕上的字，比进程名重得多
+        assert!(!d.screen_watch, "screen_watch 默认必须关（要勾选确认才开）");
+        assert_eq!(d.screen_every_minutes, 5);
+        assert_eq!(d.screen_chars, 240);
     }
 
     /// 端到端：一份坏 config.json 必须被隔离成 `.bad-*`，而不是被下一次保存悄悄覆盖。

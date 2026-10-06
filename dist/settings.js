@@ -546,7 +546,10 @@ function setTab(name) {
       syncDiary();
     })().catch(fail);
   if (name === 'memory') reloadMemories().catch(fail);
-  if (name === 'tools') refreshTools().catch(fail);
+  if (name === 'tools') {
+    refreshTools().catch(fail);
+    refreshScreen().catch(fail);
+  }
   if (name === 'log') {
     startLogFollow();
     refreshPet().catch(fail);
@@ -634,6 +637,147 @@ async function refreshFront() {
     window.__DSC_FRONT__ = { enabled: true, error: String(e) };
   }
 }
+
+// ── 她看得见你屏幕上写了什么 ──────────────────────────────────────────────
+//
+// 这是全项目门最厚的一个开关：默认关、打开要勾选确认、敏感软件在前台时这一趟根本不截。
+//
+// 【为什么"确认过"这件事不写进配置】确认卡是**每一次打开都要走一遍**的 ——
+// 存进配置就变成"第一次点过，以后永远免确认"，那就不是确认了。高敏感的东西
+// 多按两下不亏。
+async function refreshScreen() {
+  let c;
+  try {
+    c = await invoke('config_get');
+  } catch (e) {
+    return;
+  }
+  const on = !!c.screenWatch;
+  $('sc-enabled').checked = on;
+  $('sc-sub').textContent = on ? `开着 · 每 ${c.screenEveryMinutes} 分钟看一眼` : '关着';
+  // 关着的时候下面那些没有意义 —— 暗下来，别让人以为改间隔能把它打开
+  $('sc-every').style.opacity = on ? '1' : '0.45';
+  $('sc-chars').style.opacity = on ? '1' : '0.45';
+  placePill(
+    'sc-every-pill',
+    document.querySelector(`#sc-every button[data-v="${c.screenEveryMinutes}"]`),
+  );
+  placePill(
+    'sc-chars-pill',
+    document.querySelector(`#sc-chars button[data-v="${c.screenChars}"]`),
+  );
+
+  let s = null;
+  try {
+    s = await invoke('dsc_screen_state');
+  } catch (e) {
+    /* 读不到就只显示"还没看过" */
+  }
+  const ago = (at) => {
+    const d = Math.max(0, Date.now() - Number(at || 0));
+    if (d < 60_000) return '刚刚';
+    if (d < 3600_000) return Math.floor(d / 60_000) + ' 分钟前';
+    return Math.floor(d / 3600_000) + ' 小时前';
+  };
+  if (!s || !s.at) {
+    $('sc-now').textContent = on ? '还没看过 —— 到点了会自己看一眼' : '还没有看过';
+  } else if (s.skipped) {
+    $('sc-now').textContent = `${ago(s.at)}没看：${s.skipped}`;
+  } else {
+    const disk = s.mode === 'memory' ? '全程没落盘' : '走了临时文件（已删）';
+    $('sc-now').textContent =
+      `${ago(s.at)}看的 · OCR 出 ${s.lines} 行 → 喂她 ${s.chars} 字` +
+      ` · ${(Number(s.ms || 0) / 1000).toFixed(1)} 秒 · ${disk} · ${s.size}`;
+  }
+  // 她拿到的那段原文也摆出来 —— 隐私开关最忌讳"开了但不知道它读到了什么"
+  const text = (s && s.text) || '';
+  $('sc-text').textContent = text;
+  $('sc-text').classList.toggle('hidden', !text);
+  window.__DSC_SCREEN__ = { cfg: { on, every: c.screenEveryMinutes, chars: c.screenChars }, snap: s };
+}
+
+function closeScreenConfirm() {
+  $('screen-mask').classList.add('hidden');
+}
+
+$('sc-enabled').addEventListener('change', async (e) => {
+  if (!e.target.checked) {
+    // 关掉永远不用确认
+    try {
+      await patchCfg({ screenWatch: false });
+      toast('停了 —— 她不会再截屏');
+    } catch (err) {
+      e.target.checked = true;
+      fail(err);
+    }
+    await refreshScreen().catch(fail);
+    return;
+  }
+  // 要开：先把勾退回去，走确认卡（确认完才真的写配置）
+  e.target.checked = false;
+  $('sc-ack').checked = false;
+  $('sc-confirm').disabled = true;
+  $('screen-mask').classList.remove('hidden');
+});
+
+$('sc-ack').addEventListener('change', (e) => {
+  $('sc-confirm').disabled = !e.target.checked;
+});
+$('sc-cancel').addEventListener('click', closeScreenConfirm);
+$('screen-mask').addEventListener('mousedown', (e) => {
+  if (e.target.id === 'screen-mask') closeScreenConfirm();
+});
+$('sc-confirm').addEventListener('click', async () => {
+  closeScreenConfirm();
+  try {
+    const cur = await invoke('config_get');
+    await patchCfg({ screenWatch: true });
+    // 【故意不顺手截一张】刚点开就立刻拍一下屏幕有点越界 —— 第一次留给她自己的节拍，
+    // 想看效果点「现在看一次」就行。
+    toast(`好 —— 每 ${cur.screenEveryMinutes || 5} 分钟看一眼，截图只在内存里`);
+  } catch (err) {
+    fail(err);
+  }
+  await refreshScreen().catch(fail);
+});
+
+$('sc-every').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b) return;
+  try {
+    placePill('sc-every-pill', b);
+    await patchCfg({ screenEveryMinutes: Number(b.dataset.v) });
+  } catch (err) {
+    fail(err);
+  }
+  await refreshScreen().catch(fail);
+});
+
+$('sc-chars').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b) return;
+  try {
+    placePill('sc-chars-pill', b);
+    await patchCfg({ screenChars: Number(b.dataset.v) });
+  } catch (err) {
+    fail(err);
+  }
+  await refreshScreen().catch(fail);
+});
+
+$('sc-look').addEventListener('click', async () => {
+  const btn = $('sc-look');
+  btn.disabled = true;
+  $('sc-now').textContent = '正在看…（本机 OCR，约 1~2 秒）';
+  try {
+    await invoke('dsc_screen_now');
+  } catch (e) {
+    fail(e);
+  }
+  btn.disabled = false;
+  await refreshScreen().catch(fail);
+});
+
 
 // ── 日志页 ──────────────────────────────────────────────────────────────
 // 主人明确要求：不要单独一个黑框窗口，日志放进设置里。所以这里是唯一的日志出口。

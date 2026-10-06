@@ -616,6 +616,65 @@
             </p>
           </section>
 
+          <!-- 屏幕内容感知 ────────────────────────────────────────────────
+               这是整个项目里**最重**的一个开关：它读的不是"你在用什么软件"，
+               而是屏幕上的字（网页在讲什么、文档写了什么、聊天框里谁在说话）。
+
+               所以它有三层门：① 默认关；② 打开要先勾选 + 看一遍弹窗说明（这个不在
+               配置里，是设置页自己拦的 —— 每次打开都要再走一遍）；③ 前台是敏感软件
+               时这一趟根本不截。清洗/滤噪/截断这些**规则**在 Rust（screen.rs，有单测），
+               截图和认字在 ocr.ps1（全程内存，不落盘）。 -->
+          <section class="editor">
+            <header class="editor-head">
+              <h2>她看得见你屏幕上写了什么</h2>
+              <span class="editor-sub" id="sc-sub">关着</span>
+            </header>
+            <label class="switch" title="截当前前台窗口、在本机认成字，把清洗后的 200~300 字放进那一轮对话。截图只在内存里，敏感软件在前台时根本不截。">
+              <input type="checkbox" id="sc-enabled" />
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">隔一会儿看一眼你的屏幕（打开要勾选确认）</span>
+            </label>
+            <div class="gates">
+              <div class="gate">
+                <span class="gate-label">多久看一次</span>
+                <div class="seg small" id="sc-every">
+                  <span class="seg-pill" id="sc-every-pill"></span>
+                  <button data-v="1">1 分钟</button>
+                  <button data-v="2">2 分钟</button>
+                  <button data-v="5">5 分钟</button>
+                  <button data-v="10">10 分钟</button>
+                  <button data-v="15">15 分钟</button>
+                  <button data-v="30">30 分钟</button>
+                </div>
+              </div>
+              <div class="gate">
+                <span class="gate-label">一次喂她</span>
+                <div class="seg small" id="sc-chars">
+                  <span class="seg-pill" id="sc-chars-pill"></span>
+                  <button data-v="200">200 字</button>
+                  <button data-v="240">240 字</button>
+                  <button data-v="300">300 字</button>
+                </div>
+              </div>
+            </div>
+            <div class="row" style="display:flex;gap:8px;align-items:center">
+              <code id="sc-now" style="flex:1 1 auto;min-width:0;padding:7px 10px;border-radius:6px;background:rgba(127,127,127,.14);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">还没有看过</code>
+              <button class="btn ghost" id="sc-look">现在看一次</button>
+            </div>
+            <pre class="log-view hidden" id="sc-text" style="max-height:130px"></pre>
+            <p class="hint">
+              <b>截图只在内存里</b>：截下来的图一个字节都不落盘（走 WinRT 的内存流，
+              实测 <code>mode=memory</code>），认完字当场就没了。识别用的是
+              <b>Windows 自带的离线 OCR</b> —— 不联网、不装东西、图片不出这台机器。
+            </p>
+            <p class="hint">
+              <b>密码管理器 / 银行 / 支付类软件在前台时，这一趟根本不截</b>（不是打码，是不看）。
+              她自己的窗口在前台时也不截。送进对话的只有清洗并截断后的那 200~300 字，
+              而且<b>和上一轮一模一样就不再重复送</b>（同一个页面盯久了不该每轮都花额度）。
+            </p>
+          </section>
+
+
           <!-- 写/改/跑工具：她唯一能**改**东西（以及跑命令）的能力。两层门 ——
                这个开关决定"她知不知道有这回事"，每次调用还要主人在聊天窗口里点确认。 -->
           <section class="editor">
@@ -939,6 +998,41 @@
           DSH 那边改格式也不会影响这里。
         </p>
         <div class="list sheet-list" id="import-list"></div>
+      </div>
+    </div>
+
+    <!-- 屏幕感知的确认卡 ──────────────────────────────────────────────
+         这是全项目最重的一个开关，所以它**不给"点一下就开"**：先把要看的东西列清楚，
+         勾了那一句才让按「打开」。而且确认状态**不落盘** —— 关掉再开还要再走一遍。
+         高敏感的东西多按两下不亏。 -->
+    <div class="mask hidden" id="screen-mask">
+      <div class="sheet">
+        <header class="sheet-head">
+          <h2>让她看你屏幕上的字？</h2>
+          <button class="tb-btn close" id="sc-cancel" title="关闭">
+            <svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+          </button>
+        </header>
+        <p class="sheet-note">
+          上面那些开关读的是"你在用什么软件"。这一个不一样 —— 它读的是
+          <b>屏幕上写着什么</b>：网页在讲什么、文档里写了什么、聊天框里是谁在说话。
+        </p>
+        <div style="padding: 14px 16px 6px; line-height: 2; font-size: 12.5px; color: var(--text-2)">
+          <div>① 每隔几分钟截一次<b>当前前台窗口</b>，在本机认成字（Windows 自带，离线，不联网）</div>
+          <div>② 截图<b>只进内存</b>，一个字节都不落盘；认完当场就没了</div>
+          <div>③ 只把清洗截断后的 <b>200~300 字</b>放进那一轮对话 —— 整屏一千多字不会全给她</div>
+          <div>④ 密码管理器 / 银行那类软件在前台时，<b>这一趟根本不截</b>（不是打码，是不看）</div>
+          <div>⑤ 每次观测都留在读数里（什么时候看的、多少字、有没有跳过），你随时能查</div>
+          <div>⑥ 关掉开关立刻停，也会把"上一轮看过什么"忘掉</div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px 16px; border-top: 1px solid var(--line); flex-wrap: wrap">
+          <label class="switch">
+            <input type="checkbox" id="sc-ack" />
+            <span class="track"><span class="knob"></span></span>
+            <span class="switch-label">我明白它会定时截屏、并在本机认字</span>
+          </label>
+          <button class="btn primary" id="sc-confirm" disabled>打开</button>
+        </div>
       </div>
     </div>
 

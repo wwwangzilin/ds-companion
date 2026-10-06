@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-screen-state"
+description = "Enables the dsc_screen_state command without any pre-configured scope."
+commands.allow = ["dsc_screen_state"]
+
+[[permission]]
+identifier = "deny-dsc-screen-state"
+description = "Denies the dsc_screen_state command without any pre-configured scope."
+commands.deny = ["dsc_screen_state"]

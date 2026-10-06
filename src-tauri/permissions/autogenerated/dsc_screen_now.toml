@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-screen-now"
+description = "Enables the dsc_screen_now command without any pre-configured scope."
+commands.allow = ["dsc_screen_now"]
+
+[[permission]]
+identifier = "deny-dsc-screen-now"
+description = "Denies the dsc_screen_now command without any pre-configured scope."
+commands.deny = ["dsc_screen_now"]

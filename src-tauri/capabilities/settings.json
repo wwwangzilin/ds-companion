@@ -75,6 +75,8 @@
     "allow-dsc-avatar-matrix",
     "allow-dsc-roster-touch",
     "allow-dsc-front-app",
+    "allow-dsc-screen-state",
+    "allow-dsc-screen-now",
     "allow-dsc-pet-window",
     "allow-dsc-pet-state"
   ]

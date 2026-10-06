@@ -34,6 +34,7 @@ mod personas;
 mod pet;
 mod propose;
 mod roster;
+mod screen;
 mod state;
 mod sync;
 mod tools;
@@ -364,6 +365,8 @@ struct TurnReport {
     peer_text: String,
     /// 【他此刻】块正文（空 = 不加）—— 他在用什么软件（要 `watch_app` 开着）
     front_text: String,
+    /// 【他屏幕上】块正文（空 = 不加）—— 屏幕上的字（要 `screen_watch` 开着，且和上轮不同）
+    screen_text: String,
     /// 通路自检的告警（空 = 没看出问题）。
     ///
     /// 【为什么要跟着每轮回来】"机制没坏、通路断了"这类问题（情绪冻结、饿着没人管）
@@ -503,6 +506,7 @@ fn dsc_turn_report(
             recent_text: String::new(),
             peer_text: String::new(),
             front_text: String::new(),
+            screen_text: String::new(),
             vitals: Vec::new(),
         };
     }
@@ -675,6 +679,9 @@ fn dsc_turn_report(
         ),
         None => String::new(),
     };
+    // 【他屏幕上】—— 屏幕上的字。要 `screen_watch` 开着，而且**这一段和上一轮不同**
+    // 才会出现（同一个页面盯久了不该每轮都把那 240 字塞进上下文）。
+    let screen_text = screen::render_block(&cfg);
 
     shell_log(&format!(
         "[state] turn={} mood={} v={:.2} aff={} energy={:.2} | body 困={:.2} 体={:.2} 饿={:.2} hr={}{} | user {} 精力={:.2} 投入={:.2}{}{} | hits={} wantModel={} | task={}{}",
@@ -747,6 +754,7 @@ fn dsc_turn_report(
         recent_text,
         peer_text,
         front_text,
+        screen_text,
         vitals,
     }
 }
@@ -1190,6 +1198,11 @@ fn config_set(app: tauri::AppHandle, cfg: config::AppConfig) -> Result<(), Strin
     // 两个调用都是幂等的（窗口在就只摆位置，不在就不动），所以每次保存都叫一遍不亏。
     pet::sync_window(&app);
     pet::on_corner_changed(&app);
+    // 屏幕感知关掉的那一刻，把"上一轮注入过什么"也清掉 ——
+    // 否则下次打开时，第一轮会因为"和上次一样"被去重吃掉，看着像没生效。
+    if !cfg.screen_watch {
+        screen::forget_last_injected();
+    }
     // 角色 / 暂停状态都可能刚被改过 —— 托盘（勾选与摘要）同步跟上
     refresh_tray(&app);
     Ok(())
@@ -2005,6 +2018,26 @@ fn dsc_pet_window(app: tauri::AppHandle) -> serde_json::Value {
     })
 }
 
+// ─────────────────────── 她瞄一眼屏幕 ───────────────────────
+
+/// 最近一次观测（界面上要显示"上次什么时候看的、多少字、有没有跳过"）
+#[tauri::command]
+fn dsc_screen_state() -> screen::Snapshot {
+    screen::snapshot()
+}
+
+/// 手动看一次（设置页的「现在看一次」）。
+///
+/// 【为什么是 async + spawn_blocking】它真要起 PowerShell 跑一趟 OCR（1~2 秒）。
+/// 同步命令跑在主线程上，那两秒里 WebView 会僵住 —— 这个坑本项目踩过
+/// （同步版 save_doc 卡到中文输入法被系统提交）。
+#[tauri::command]
+async fn dsc_screen_now() -> screen::Snapshot {
+    tauri::async_runtime::spawn_blocking(screen::look_now)
+        .await
+        .unwrap_or_default()
+}
+
 // ─────────────────────── 用对话同步设置 ───────────────────────
 //
 // 打包在壳里（文件都在这儿），发消息在页面里（只有它有登录态）—— 所以这里是
@@ -2688,6 +2721,8 @@ pub fn run() {
             dsc_turn_report,
             dsc_roster_touch,
             dsc_front_app,
+            dsc_screen_state,
+            dsc_screen_now,
             dsc_sense_reserve,
             dsc_sense_apply,
             dsc_proactive,
@@ -2854,6 +2889,14 @@ pub fn run() {
                     refresh_tray(&h);
                 });
             }
+
+            // 屏幕感知的节拍器：每 TICK_SECS 秒醒一次，到点了才真去截屏（间隔本身是分钟级配置）。
+            // 【为什么不用 setInterval 那套】这是 std::thread + sleep，进程退出就没了 ——
+            // 正好，这个功能不该在壳外面留下任何东西。
+            std::thread::spawn(|| loop {
+                std::thread::sleep(std::time::Duration::from_secs(screen::TICK_SECS));
+                screen::tick();
+            });
 
             // 桌宠：上次开着的话，启动就让她回到桌面上（内部是 spawn，不会在 setup 里卡住）
             pet::sync_window(app.handle());

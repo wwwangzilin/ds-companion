@@ -61,6 +61,8 @@ fn main() {
             "dsc_turn_report",
             "dsc_roster_touch",
             "dsc_front_app",
+            "dsc_screen_state",
+            "dsc_screen_now",
             "dsc_sense_reserve",
             "dsc_sense_apply",
             "dsc_proactive",
