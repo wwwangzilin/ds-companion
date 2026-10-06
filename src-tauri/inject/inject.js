@@ -724,6 +724,109 @@
     el.style.display = avOn || hudOn ? 'block' : 'none';
   }
 
+  // ── 让模型来写这条活动（activity_mode = auto 时走这条路） ──────────
+  //
+  // 【为什么走隐藏链，而不是让她在主对话里顺手报一句】她在主对话里输出的任何标记
+  // 都会被上游**流式渲染进聊天框**，而这个注入脚本从头到尾不碰上游聊天 DOM
+  // （改了也会被 React 重渲染盖掉）。所以"对主人不可见的结构化往返"只有隐藏链
+  // 承载得了 —— 这就是为什么这里宁可多开一条链，也不在主对话里塞标记。
+  //
+  // 【本地池不删】它降级成**底线**：没聊过、请求失败、模型没回 —— 都用它那条。
+  /** 最近一轮问答（隐藏链组 prompt 用） */
+  var lastTurnInfo = null;
+  /** 上一次请模型写活动是在哪个时间块（5 分钟块内只问一次） */
+  var activityAskBlock = -1;
+  /** 正问着（防同块内重复发） */
+  var activityAsking = false;
+
+  function buildActivityPrompt() {
+    var s = CFG.state || {};
+    var b = s.body || {};
+    var bits = [];
+    if (b.asleep) bits.push('睡着');
+    else if (b.sleepiness >= 0.7) bits.push('很困');
+    if (b.hunger >= 0.65) bits.push('饿');
+    if (b.stamina <= 0.35) bits.push('累');
+    return [
+      '（后台小任务，不是对话。你正在扮演「' + (CFG.personaName || '她') + '」，保持你的身份与说话习惯。）',
+      '',
+      '【刚刚发生的事】',
+      '主人：' + lastTurnInfo.user,
+      '你：' + lastTurnInfo.assistant,
+      '',
+      '【你此刻】',
+      '心情：' + (s.mood || '平静') + '｜好感：' + (s.affinity || 0) + '/100｜精力：' +
+        Math.round((s.energy === undefined ? 0.8 : s.energy) * 100) + '%' +
+        (bits.length ? '｜身体：' + bits.join('、') : ''),
+      '',
+      '【你平时会做的事】（只是风格参考，可以用也可以自己想）',
+      String(CFG.activities || '').trim(),
+      '',
+      '【任务】用**一行、15 字以内**写下你现在手上正在做的事。',
+      '要求：接得上上面刚聊的事；第一人称、具体、有画面感；',
+      '不要引号、不要解释、不要任何前缀或标记，只输出这一行。',
+    ].join('\n');
+  }
+
+  /** 把模型那一行收拾干净：只留第一行、去引号与前缀、截到 40 字（跟壳侧一个口径） */
+  function cleanActivity(raw) {
+    var s = String(raw || '').trim();
+    if (!s) return '';
+    s = s.split('\n')[0].trim();
+    // 常见的自作主张：包引号、写「我正在：」「活动：」这种前缀
+    s = s.replace(/^["'「『]+/, '').replace(/["'」』]+$/, '');
+    s = s.replace(/^(我正在|我在|正在做|活动|在做)\s*[:：]?\s*/, '');
+    s = s.trim();
+    if (!s) return '';
+    return s.length > 40 ? s.slice(0, 40) : s;
+  }
+
+  function askActivity() {
+    if (activityAsking) return;
+    var util = window.__DSC_DS_UTIL__;
+    if (!util || typeof util.ask !== 'function') return;
+    if (!lastTurnInfo || !lastTurnInfo.user) return;
+    activityAsking = true;
+    var t0 = Date.now();
+    util
+      .ask('act', buildActivityPrompt())
+      .then(function (r) {
+        var text = cleanActivity(r && r.text);
+        if (!text) {
+          log('ACT 空回复 —— 保留本地那条');
+          return;
+        }
+        if (text === activity) return;
+        activity = text;
+        log('ACT 模型给了「' + text + '」（' + (Date.now() - t0) + 'ms）');
+        paintActivity();
+      })
+      ['catch'](function (e) {
+        // 失败**什么都不换**：本地池那条继续用，界面上不该有任何变化
+        log('ACT 失败（保留本地那条）：' + (e && e.message ? e.message : e));
+      })
+      ['then'](function () {
+        activityAsking = false;
+      });
+  }
+
+  /**
+   * 该不该请模型写一条。三道闸：
+   *   ① `activity_mode` 得是 auto（local = 纯本地池，一个请求都不发）
+   *   ② 一个 5 分钟块内只问一次
+   *   ③ **最近聊过**才问 —— 她一个人待着时没什么"场景"可言，本地池就够了，
+   *      没必要为此专门开一条请求
+   */
+  function maybeAskActivity() {
+    if (String(CFG.activityMode || 'auto') !== 'auto') return;
+    if (!CFG.activities || !CFG.state || !CFG.state.turns) return;
+    var block = Math.floor(Date.now() / ACTIVITY_BLOCK_MS);
+    if (block === activityAskBlock) return;
+    if (!lastTurnInfo || Date.now() - lastTurnInfo.at > 30 * 60 * 1000) return;
+    activityAskBlock = block;
+    askActivity();
+  }
+
   /**
    * 15 秒看一眼。
    *
@@ -742,6 +845,8 @@
       else if (had) log('activity 清空了（活动池没配，或者这一档没有可用的）');
     }
     paintActivity();
+    // 顺便看看该不该请模型写一条 —— 它自带三道闸，15 秒调一次是安全的
+    maybeAskActivity();
   }
 
   // ─────────────────────── 对话留档 ───────────────────────
@@ -1165,6 +1270,12 @@
     t.push({ user: String(userText || '').slice(0, 2000), assistant: String(assistantText).slice(0, 4000) });
     while (t.length > TRANSCRIPT_LIMIT) t.shift();
     stats.turnsRemembered = (stats.turnsRemembered || 0) + 1;
+    // 只留**最近一条**：隐藏链组 prompt 只要"刚刚聊了什么"，攒历史没意义（还越背越重）
+    lastTurnInfo = {
+      user: String(userText || '').slice(0, 600),
+      assistant: String(assistantText).slice(0, 800),
+      at: Date.now(),
+    };
     // 攒轮数 + 看看该不该自动整理
     bumpPending();
     maybeAutoExtract(sessionId);
@@ -2621,6 +2732,62 @@
   window.__DSC_ACTIVITY_REPAINT__ = function () {
     paintActivity();
     return true;
+  };
+  /** 验收用：模型那条路的**三道闸**现状（只看闸，不发请求 —— 验收不烧额度）。 */
+  window.__DSC_ACTIVITY_ASK_STATE__ = function () {
+    var s = CFG.state || {};
+    var block = Math.floor(Date.now() / ACTIVITY_BLOCK_MS);
+    var idleMs = lastTurnInfo ? Date.now() - lastTurnInfo.at : -1;
+    var mode = String(CFG.activityMode || 'auto');
+    var hasPool = !!(CFG.activities && String(CFG.activities).trim());
+    return {
+      mode: mode,
+      block: block,
+      askedBlock: activityAskBlock,
+      asking: activityAsking,
+      hasPool: hasPool,
+      turns: s.turns || 0,
+      hasLastTurn: !!lastTurnInfo,
+      idleMs: idleMs,
+      /** 此刻调 maybeAskActivity 会不会真去问（把三道闸摊开，断言才好写） */
+      wouldAsk:
+        mode === 'auto' &&
+        hasPool &&
+        !!s.turns &&
+        block !== activityAskBlock &&
+        !!lastTurnInfo &&
+        idleMs >= 0 &&
+        idleMs <= 30 * 60 * 1000,
+    };
+  };
+  /** 验收用：把一段「模型回复」喂给清洗函数，看它变成什么（不碰状态）。 */
+  window.__DSC_ACTIVITY_CLEAN__ = function (raw) {
+    return cleanActivity(raw);
+  };
+  /** 验收用：组好的那段隐藏链 prompt（验它带没带上下文、状态与活动池）。 */
+  window.__DSC_ACTIVITY_PROMPT__ = function () {
+    return lastTurnInfo ? buildActivityPrompt() : '';
+  };
+  /** 调试用：造一轮「刚聊过」—— 跑真链路时省得先真发一条消息。 */
+  window.__DSC_ACTIVITY_SEED__ = function (user, assistant) {
+    lastTurnInfo = {
+      user: String(user || '').slice(0, 600),
+      assistant: String(assistant || '').slice(0, 800),
+      at: Date.now(),
+    };
+    return true;
+  };
+  /** 调试用：**真去问一次模型**（花一次额度，只在手动验证时用）。 */
+  window.__DSC_ACTIVITY_ASK_NOW__ = function () {
+    activityAskBlock = -1;
+    activityAsking = false;
+    askActivity();
+    return true;
+  };
+  /** 验收用：把"这一块已经问过了"标上 —— 用来验同一个块内不会问第二次。 */
+  window.__DSC_ACTIVITY_MARK_ASKED__ = function () {
+    activityAskBlock = Math.floor(Date.now() / ACTIVITY_BLOCK_MS);
+    return activityAskBlock;
   };
   /** 验收用：几个标签在此刻成不成立（验条件标签用）。 */
   window.__DSC_ACTIVITY_FITS__ = function (tags) {

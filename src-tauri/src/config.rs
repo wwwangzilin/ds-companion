@@ -89,6 +89,14 @@ pub struct AppConfig {
     /// 页面左下角的角色立绘（内置 DeepSeek 娘；自建角色可在设置里传自己的图）
     #[serde(default = "default_true")]
     pub avatar_enabled: bool,
+    /// 「她手上正在做的事」从哪来：`local` = 只从人设的活动池里挑（零成本）；
+    /// `auto` = 先让模型按当前场景写一条，拿不到就退回本地池。
+    ///
+    /// **默认 auto** —— 模型写的那条能接上刚聊的事（"你让我查的那个报错我还在看"），
+    /// 这是本地池给不了的。它走的是**隐藏链**（`ask('act')`，不在聊天框里留任何痕迹），
+    /// 大约 5 分钟一次、而且只在最近聊过的时候才问。
+    #[serde(default = "default_activity_mode")]
+    pub activity_mode: String,
     /// 虚拟身体层（困倦/体力/饿/心跳）注入进【状态】块
     #[serde(default = "default_true")]
     pub body_enabled: bool,
@@ -150,6 +158,10 @@ pub struct AppConfig {
 }
 
 fn default_task_mode() -> String {
+    "auto".into()
+}
+
+fn default_activity_mode() -> String {
     "auto".into()
 }
 
@@ -247,6 +259,7 @@ impl Default for AppConfig {
             ooc_token: String::new(),
             hud_enabled: true,
             avatar_enabled: true,
+            activity_mode: default_activity_mode(),
             body_enabled: true,
             user_state_enabled: true,
             self_review_mode: default_review_mode(),
@@ -335,6 +348,8 @@ pub struct InjectPayload {
     pub hud_enabled: bool,
     /// 页面左下角立绘的总开关（关 = 页面连素材都不去取）
     pub avatar_enabled: bool,
+    /// 「她手上正在做的事」的来源：local / auto（见 Config 上那段说明）
+    pub activity_mode: String,
     pub sense_mode: String,
     pub sense_every_turns: u32,
     pub sense_daily_cap: u32,
@@ -448,6 +463,7 @@ pub fn inject_payload() -> InjectPayload {
         anchor_every_turns: cfg.anchor_every_turns,
         hud_enabled: cfg.hud_enabled,
         avatar_enabled: cfg.avatar_enabled,
+        activity_mode: cfg.activity_mode.clone(),
         sense_mode: cfg.sense_mode.clone(),
         sense_every_turns: cfg.sense_every_turns,
         sense_daily_cap: cfg.sense_daily_cap,
@@ -546,6 +562,8 @@ mod tests {
         assert!(d.sense_daily_cap > 0, "模型感知要有当日闸");
         assert!(d.hud_enabled);
         assert!(d.avatar_enabled);
+        // 活动默认走模型（`local` 只是"省额度"的退路，不是默认）
+        assert_eq!(d.activity_mode, "auto");
     }
 
     /// 端到端：一份坏 config.json 必须被隔离成 `.bad-*`，而不是被下一次保存悄悄覆盖。

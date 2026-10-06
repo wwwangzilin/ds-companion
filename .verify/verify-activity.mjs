@@ -412,5 +412,68 @@ check(
 
 await call(`'persona_delete', { id: '${PID}' }`).catch(() => 0);
 
+// ── F. 让模型写那条：**机制层**（不真发请求）──────────────────────
+// 真链路由 .verify/probe-activity-ask.mjs 手动跑 —— 它真花一次额度，而且结果取决于
+// 模型当时的发挥，拿它当断言就是间歇性假红。这里只验"该不该问"和"收到之后怎么收拾"，
+// 这两样才是会**静默**出错的地方（多问一次就是白烧一次；清洗漏了就是难看的一行）。
+await evalIn(
+  main,
+  `(() => {
+     const c = window.__DSC_CFG__();
+     c.state = c.state || {};
+     c.state.turns = Math.max(1, c.state.turns || 0);
+     window.__DSC_ACTIVITY_SEED__('主人：帮我看下这个报错', '你：行，我盯着');
+     return 1;
+   })()`,
+);
+const ask0 = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_ACTIVITY_ASK_STATE__())`));
+check('默认就是「让她自己想」（auto）', ask0.mode === 'auto', `mode=${ask0.mode}`);
+check('★ 三道闸都满足时该问（刚聊过 + 有池子 + 有状态）', ask0.wouldAsk === true, JSON.stringify(ask0));
+
+// 切成 local → 一次都不该问（这是"零请求"那条承诺的唯一保证）
+await evalIn(main, `(() => { window.__DSC_CFG__().activityMode = 'local'; return 1; })()`);
+const askLocal = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_ACTIVITY_ASK_STATE__())`));
+check('★ 切成 local → 一个请求都不发', askLocal.wouldAsk === false, JSON.stringify(askLocal));
+await evalIn(main, `(() => { window.__DSC_CFG__().activityMode = 'auto'; return 1; })()`);
+
+// 同一个时间块里不许问第二次 —— 否则 15 秒的节拍会变成"15 秒一次请求"
+await evalIn(main, `window.__DSC_ACTIVITY_MARK_ASKED__()`);
+const askDup = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_ACTIVITY_ASK_STATE__())`));
+check(
+  '★ 同一块内不会问第二次（否则节拍会变成 15 秒一次请求）',
+  askDup.wouldAsk === false && askDup.askedBlock === askDup.block,
+  JSON.stringify(askDup),
+);
+
+// 清洗：模型爱自作主张的那几种写法
+for (const [raw, want, why] of [
+  ['「翻你的日志」', '翻你的日志', '去掉两头的引号'],
+  ['我正在：拆你的耳机线', '拆你的耳机线', '去掉「我正在：」这种前缀'],
+  ['在算那道题\n（顺便解释一下）', '在算那道题', '只留第一行'],
+  ['   ', '', '全是空白 → 空串（宁可保留旧的那条）'],
+]) {
+  const got = await evalIn(main, `window.__DSC_ACTIVITY_CLEAN__(${JSON.stringify(raw)})`);
+  check(
+    `清洗：${why}`,
+    got === want,
+    `${JSON.stringify(raw)} → ${JSON.stringify(got)}（想要 ${JSON.stringify(want)}）`,
+  );
+}
+const cutLong = await evalIn(
+  main,
+  `window.__DSC_ACTIVITY_CLEAN__(${JSON.stringify('很长很长的一条活动'.repeat(6))})`,
+);
+check('清洗：超长截到 40 字（跟壳侧一个口径）', String(cutLong).length === 40, `len=${String(cutLong).length}`);
+
+// prompt 里得有"刚聊了什么"和活动池 —— 少了任何一样，她就只能凭空编
+const actPrompt = String(await evalIn(main, `window.__DSC_ACTIVITY_PROMPT__()`));
+check('★ prompt 带上了刚聊的那轮（否则接不上场景）', actPrompt.indexOf('帮我看下这个报错') !== -1, `${actPrompt.length} 字`);
+check(
+  '★ prompt 把活动池给她当风格参考',
+  actPrompt.indexOf('【你平时会做的事】') !== -1 && actPrompt.indexOf(poolRows[0]) !== -1,
+  '',
+);
+check('prompt 明确要求「只输出这一行」（防她写小作文）', actPrompt.indexOf('只输出这一行') !== -1, '');
+
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`);
 process.exit(failed ? 1 : 0);

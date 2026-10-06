@@ -1677,6 +1677,7 @@ function renderStAll() {
   $('st-enabled').checked = cfg.stateEnabled !== false;
   $('st-hud').checked = cfg.hudEnabled !== false;
   $('st-avatar').checked = cfg.avatarEnabled !== false;
+  $('st-actmode').value = cfg.activityMode || 'auto';
   $('st-body').checked = cfg.bodyEnabled !== false;
   $('st-user').checked = cfg.userStateEnabled !== false;
   $('sf-idle').value = cfg.proactiveIdleMinutes || 20;
@@ -2306,6 +2307,12 @@ $('st-avatar').addEventListener('change', (e) =>
   setGate(
     { avatarEnabled: e.target.checked },
     e.target.checked ? '立绘已显示' : '立绘已隐藏',
+  ),
+);
+$('st-actmode').addEventListener('change', (e) =>
+  setGate(
+    { activityMode: e.target.value },
+    e.target.value === 'auto' ? '她会照当前场景自己想' : '只用列表里那几条',
   ),
 );
 $('btn-new').addEventListener('click', newPersona);
