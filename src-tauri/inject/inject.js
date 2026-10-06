@@ -1472,7 +1472,16 @@
   //
   // 【为什么整层 pointer-events:none】立绘是装饰，绝不能挡住页面左下角本来能点的
   // 东西 —— 整层不吃鼠标事件，主人该怎么点还怎么点。
-  var AVATAR = { id: null, url: '', ratio: 0.75, speaking: false, on: false, breath: null, plan: null };
+  var AVATAR = {
+    id: null,
+    url: '',
+    ratio: 0.75,
+    speaking: false,
+    bubble: false,
+    on: false,
+    breath: null,
+    plan: null,
+  };
 
   // 立绘动效的两条硬约束：
   //   ① **尊重 reduced-motion** —— 没完没了的浮动会让人难受，系统开关说了算；
@@ -1525,6 +1534,7 @@
       box.appendChild(img);
       document.body.appendChild(box);
       watchSay();
+      hookTalkXHR();
       // 页面藏起来 → 把呼吸停掉；回来再起（applyAvatarBreath 自己看 document.hidden）
       document.addEventListener('visibilitychange', function () {
         applyAvatarBreath();
@@ -1539,17 +1549,86 @@
     }
   }
 
-  /** 她"说话"时：整个人往前凑一点，同时**把呼吸定住** —— 注意力在说话上，来回飘反而假。 */
+  /** 气泡（只在空闲主动搭话时弹）出现也算"她在说话"—— 但那不是主要来源，见下面的 XHR 钩子。 */
   function watchSay() {
     var say = document.getElementById('dsc-say');
     if (!say || !window.MutationObserver) return;
     try {
       new MutationObserver(function () {
-        AVATAR.speaking = say.style.display !== 'none' && say.style.opacity === '1';
-        paintAvatarPose();
+        AVATAR.bubble = say.style.display !== 'none' && say.style.opacity === '1';
+        syncAvatarSpeaking();
       }).observe(say, { attributes: true, attributeFilter: ['style'] });
     } catch (e) {
       /* 监听不上只是少了动效，不影响立绘本身 */
+    }
+  }
+
+  // ── 「她正在说话」的两个来源 ──
+  //
+  // ① 气泡（#dsc-say）：只在**空闲主动搭话**时弹出来；
+  // ② 页面上那次 completion 请求在飞 —— **这才是主人正常聊天时她"说话"的时刻**。
+  //
+  // 【为什么②天然不会误判】上游的正常对话走 **XHR**，而我们自己的隐藏链（记忆整理 /
+  // 感知 / 自检）走 **fetch**（deepseek-client.js 全用 fetch）—— 两层天然分开，不用去认
+  // bypass 头。当初只挂 fetch 钩子时注入一动不动，踩的就是「上游走 XHR」这一点。
+  //
+  // 【为什么不能只靠气泡】气泡不弹的时候（也就是绝大多数正常对话）立绘一动不动 ——
+  // 这正是主人说的"说话时好像没什么变化"。
+  var AVATAR_TALK = { on: false, timer: 0 };
+
+  function syncAvatarSpeaking() {
+    AVATAR.speaking = !!(AVATAR.bubble || AVATAR_TALK.on);
+    paintAvatarPose();
+  }
+
+  function avatarTalkStart() {
+    AVATAR_TALK.on = true;
+    syncAvatarSpeaking();
+    // 兜底：万一流卡住没等到 loadend，最多装 2 分钟就松手
+    clearTimeout(AVATAR_TALK.timer);
+    AVATAR_TALK.timer = setTimeout(avatarTalkEnd, 120000);
+  }
+
+  function avatarTalkEnd() {
+    clearTimeout(AVATAR_TALK.timer);
+    AVATAR_TALK.timer = 0;
+    if (!AVATAR_TALK.on) return;
+    AVATAR_TALK.on = false;
+    // 留半秒缓冲：最后一帧落下再放松，不然像被掐断
+    setTimeout(syncAvatarSpeaking, 600);
+  }
+
+  /** 再叠一层 XHR 观察（只监听收发时机，不碰请求本身，也不改 body）。 */
+  function hookTalkXHR() {
+    try {
+      var XS = window.XMLHttpRequest;
+      if (!XS || !XS.prototype || XS.prototype.__dscTalkHooked) return;
+      XS.prototype.__dscTalkHooked = true;
+      var open0 = XS.prototype.open;
+      var send0 = XS.prototype.send;
+      XS.prototype.open = function (method, url) {
+        try {
+          this.__dscTalkUrl = url;
+        } catch (e) {}
+        return open0.apply(this, arguments);
+      };
+      XS.prototype.send = function () {
+        try {
+          if (isCompletion(this.__dscTalkUrl)) {
+            var xhr = this;
+            avatarTalkStart();
+            xhr.addEventListener('loadend', avatarTalkEnd);
+            xhr.addEventListener('error', avatarTalkEnd);
+            xhr.addEventListener('abort', avatarTalkEnd);
+          }
+        } catch (e) {
+          /* 观察失败不该影响请求本身 */
+        }
+        return send0.apply(this, arguments);
+      };
+      log('talk-hook ready（立绘会跟着她的回复动）');
+    } catch (e) {
+      log('talk-hook-failed ' + e);
     }
   }
 
@@ -1593,14 +1672,17 @@
    * 只换快慢不换幅度的话，看久了像卡帧；幅度一起变才有"活着"的感觉。
    */
   function avatarBreathPlan() {
+    // 说话优先于一切：这时要的是"看得出在动"，而不是像睡着那样慢下来
+    if (AVATAR.speaking) return { dur: 2100, y: 4, rot: 0.7, tag: 'talking' };
     var s = (CFG && CFG.state) || {};
     var b = s.body || {};
-    if (b.asleep) return { dur: 7000, y: 13, tag: 'asleep' };
+    if (b.asleep) return { dur: 7000, y: 13, rot: 0, tag: 'asleep' };
     var arousal = avatarUnit(s.arousal, 0.5);
     var sleep = avatarUnit(b.sleepiness, 0.2);
     return {
       dur: Math.round(4600 - (arousal - 0.5) * 2200 + sleep * 1600),
       y: Math.round((8 - (arousal - 0.5) * 4 + sleep * 4) * 10) / 10,
+      rot: 0,
       tag: sleep >= 0.65 ? 'sleepy' : arousal >= 0.65 ? 'lively' : 'calm',
     };
   }
@@ -1619,8 +1701,13 @@
       return;
     }
     var plan = avatarBreathPlan();
-    var wantPaused = AVATAR.speaking || !!document.hidden;
-    if (AVATAR.breath && AVATAR.plan && AVATAR.plan.dur === plan.dur && AVATAR.plan.y === plan.y) {
+    // 说话时**不再暂停**：静止是最不容易被察觉的（而且和"没在说话"的慢呼吸对比很弱）。
+    // 只有页面被藏起来才真的停。
+    var wantPaused = !!document.hidden;
+    if (
+      AVATAR.breath && AVATAR.plan &&
+      AVATAR.plan.dur === plan.dur && AVATAR.plan.y === plan.y && AVATAR.plan.rot === plan.rot
+    ) {
       try {
         wantPaused ? AVATAR.breath.pause() : AVATAR.breath.play();
       } catch (e) {}
@@ -1632,11 +1719,23 @@
       } catch (e) {}
     }
     AVATAR.plan = plan;
+    // 说话档 = 快而浅 + 极轻的左右摆（四帧一循环）："头在动"比单纯上下位移显眼得多。
+    // 其余档 = 一来一回的慢呼吸（两帧 alternate）。
+    var frames = plan.rot
+      ? [
+          { transform: 'translateY(0px) rotate(0deg)' },
+          { transform: 'translateY(-' + plan.y + 'px) rotate(-' + plan.rot + 'deg)' },
+          { transform: 'translateY(0px) rotate(0deg)' },
+          { transform: 'translateY(-' + plan.y + 'px) rotate(' + plan.rot + 'deg)' },
+        ]
+      : [{ transform: 'translateY(0px)' }, { transform: 'translateY(-' + plan.y + 'px)' }];
     try {
-      AVATAR.breath = img.animate(
-        [{ transform: 'translateY(0px)' }, { transform: 'translateY(-' + plan.y + 'px)' }],
-        { duration: plan.dur, iterations: Infinity, direction: 'alternate', easing: 'ease-in-out' },
-      );
+      AVATAR.breath = img.animate(frames, {
+        duration: plan.dur,
+        iterations: Infinity,
+        direction: plan.rot ? 'normal' : 'alternate',
+        easing: 'ease-in-out',
+      });
       if (wantPaused) AVATAR.breath.pause();
     } catch (e) {
       AVATAR.breath = null;
@@ -2065,10 +2164,14 @@
       natH: img ? img.naturalHeight : 0,
       // 动效现状（验收断言用）
       speaking: AVATAR.speaking,
+      bubble: AVATAR.bubble,
+      talking: AVATAR_TALK.on,
+      talkHooked: !!(window.XMLHttpRequest && window.XMLHttpRequest.prototype.__dscTalkHooked),
       still: AVATAR_STILL,
       breathTag: AVATAR.plan ? AVATAR.plan.tag : '',
       breathDur: AVATAR.plan ? AVATAR.plan.dur : 0,
       breathY: AVATAR.plan ? AVATAR.plan.y : 0,
+      breathRot: AVATAR.plan ? AVATAR.plan.rot : 0,
       anims: img && img.getAnimations ? img.getAnimations().length : 0,
       animState: (function () {
         if (!img || !img.getAnimations) return '';
@@ -2082,6 +2185,12 @@
   window.__DSC_AVATAR_REPOSE__ = function () {
     paintAvatarPose();
     return true;
+  };
+  // 验收用：模拟"她正在说话"（真发一条消息要花钱 —— 链路归链路、状态机归状态机）
+  window.__DSC_AVATAR_TALK__ = function (on) {
+    if (on) avatarTalkStart();
+    else avatarTalkEnd();
+    return AVATAR.speaking;
   };
 
   log(

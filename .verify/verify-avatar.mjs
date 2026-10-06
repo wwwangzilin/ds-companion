@@ -392,26 +392,57 @@ await sleep(250);
 const sad = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
 check('心情差时姿态往下坠', /translateY\(2px\)/.test(sad.pose || ''), sad.pose);
 
-// 说话：往前凑 + 呼吸定住
+// ── 「她正在说话」的两个来源 ────────────────────────────────────────
+check('★ XHR 观察已挂上（她回复时立绘才会动）', anim.talkHooked === true, `talkHooked=${anim.talkHooked}`);
+check('常态下没在说话', anim.talking === false && anim.bubble === false && anim.speaking === false);
+
+// 来源 A：页面上她正在回复（completion 请求在飞）。
+// 真发一条消息要花钱 —— **链路归链路、状态机归状态机**：talkHooked 证明观察挂上了，
+// 下面用探针验状态机与动效档位。
+await evalIn(main, `window.__DSC_AVATAR_TALK__(true)`);
+await sleep(500);
+const talking = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check(
+  '★ 她说话时切成 talking 档（快而浅 + 左右摆）',
+  talking.breathTag === 'talking' && talking.breathRot > 0,
+  `${talking.breathTag} dur=${talking.breathDur} y=${talking.breathY} rot=${talking.breathRot}`,
+);
+check('★ 说话时立绘往前凑', /translateY\(-10px\)/.test(talking.pose || ''), talking.pose);
+check(
+  '★ 说话时**不**定住（静止是最不容易被察觉的）',
+  pageHidden ? true : talking.animState === 'running',
+  `state=${talking.animState}`,
+);
+check(
+  '说话档比平静档更快、幅度更小（快而浅 = 在讲话）',
+  talking.breathDur < anim.breathDur && talking.breathY < anim.breathY,
+  `talking ${talking.breathDur}ms/${talking.breathY}px vs 平静 ${anim.breathDur}ms/${anim.breathY}px`,
+);
+
+// 来源 B：气泡（只在空闲主动搭话时弹）
 await evalIn(
   main,
-  `(() => { const s = document.getElementById('dsc-say'); s.style.display = 'block'; s.style.opacity = '1'; return true; })()`,
+  `(() => { window.__DSC_AVATAR_TALK__(false); const s = document.getElementById('dsc-say');
+     s.style.display = 'block'; s.style.opacity = '1'; return true; })()`,
 );
-await sleep(450);
-const talking = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
-check('★ 说话时立绘往前凑', /translateY\(-10px\)/.test(talking.pose || ''), talking.pose);
-check('★ 说话时呼吸定住（不来回飘才像在说话）', talking.animState === 'paused', `state=${talking.animState}`);
+await sleep(800);
+const bubbled = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+check(
+  '气泡弹出时也算说话',
+  bubbled.bubble === true && bubbled.speaking === true && bubbled.breathTag === 'talking',
+  `bubble=${bubbled.bubble} speaking=${bubbled.speaking} tag=${bubbled.breathTag}`,
+);
 
 await evalIn(
   main,
   `(() => { const s = document.getElementById('dsc-say'); s.style.opacity = '0'; s.style.display = 'none'; return true; })()`,
 );
-await sleep(450);
+await sleep(1000);
 const settled = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
 check(
-  '说完回到常态（呼吸继续）',
-  pageHidden ? true : settled.animState === 'running',
-  `state=${settled.animState} pose=${settled.pose}`,
+  '说完回到常态呼吸',
+  settled.speaking === false && settled.breathTag !== 'talking',
+  `tag=${settled.breathTag} speaking=${settled.speaking} pose=${settled.pose}`,
 );
 
 // ── 截图（给主人肉眼看的） ────────────────────────────────────────
