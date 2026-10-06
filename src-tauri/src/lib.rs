@@ -31,6 +31,7 @@ mod digest;
 mod memory;
 mod personas;
 mod propose;
+mod roster;
 mod state;
 mod sync;
 mod tools;
@@ -355,6 +356,10 @@ struct TurnReport {
     relation_text: String,
     /// 【待回访】块正文（空 = 不加）—— 到点了的伏笔
     pending_text: String,
+    /// 【他手上的东西】块正文（空 = 不加）—— 工作区里最近动过的文件
+    recent_text: String,
+    /// 【同住】块正文（空 = 不加）—— 这台机器上还有谁在
+    peer_text: String,
     /// 通路自检的告警（空 = 没看出问题）。
     ///
     /// 【为什么要跟着每轮回来】"机制没坏、通路断了"这类问题（情绪冻结、饿着没人管）
@@ -491,6 +496,8 @@ fn dsc_turn_report(
             scene_text: String::new(),
             relation_text: String::new(),
             pending_text: String::new(),
+            recent_text: String::new(),
+            peer_text: String::new(),
             vitals: Vec::new(),
         };
     }
@@ -619,6 +626,10 @@ fn dsc_turn_report(
     let scene_text = state::render_scene_block(&saved);
     let relation_text = state::render_relation_block(&saved, &address, now);
     let pending_text = state::render_pending_block(&pending_whats);
+    // 「她看得见你在改什么」：工作区里最近 6 小时动过的文件（带 60 秒缓存，见 tools.rs）
+    let recent_text = render_recent_block(&tools::recent_files_cached(6 * 60 * 60 * 1000, 5));
+    // 「她不是一个人在这台机器上」：别人最近还在不在、当时在干嘛
+    let peer_text = roster::render_peer_block(&roster::load(), &character, now);
 
     shell_log(&format!(
         "[state] turn={} mood={} v={:.2} aff={} energy={:.2} | body 困={:.2} 体={:.2} 饿={:.2} hr={}{} | user {} 精力={:.2} 投入={:.2}{}{} | hits={} wantModel={} | task={}{}",
@@ -688,8 +699,60 @@ fn dsc_turn_report(
         scene_text,
         relation_text,
         pending_text,
+        recent_text,
+        peer_text,
         vitals,
     }
+}
+
+/// 【他手上的东西】块 —— 她"看得见你在干什么"。
+///
+/// 【为什么要它】工具层能读文件，但那是她**主动调用**才读得到；这条是顺手带进注入的，
+/// 零请求。有了它，她的关心才有落点（"那个文件你今天改了好几遍"），而不是随机问候。
+///
+/// 【刻意写短 + 给退路】它是**背景**不是任务：块尾明确说"可以提也可以不提"，
+/// 免得她每轮都来一句"你在改 inject.js 呀" —— 那比不提更烦。
+///
+/// 【只报"多久之前"，不报"改了几次"】mtime 只有一个时间戳、没有历史。想报次数得自己
+/// 存快照（另一套东西，还会跟着数据目录一起长）。这里不假装有。
+fn render_recent_block(files: &[(String, u64)]) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = files
+        .iter()
+        .map(|(f, age)| format!("{}（{}）", f, tools::ago_text(*age)))
+        .collect();
+    format!(
+        "【他手上的东西】\n他最近在这个工作区里动过：{}\n【这是他自己的活儿。可以顺口带一句，也可以完全不提 —— 别变成查岗，也别每次都说。】",
+        items.join("、")
+    )
+}
+
+/// 记一笔"她刚露面了"（**页面**用）—— 页面在活动变化时报一次。
+///
+/// 【为什么由页面报】"她此刻在干嘛"只有页面知道（本地时间 + 状态 + 模型写的那条）；
+/// 壳只负责把这份"在场"存下来，好在**别的**角色登场时提一句。
+#[tauri::command]
+fn dsc_roster_touch(
+    id: Option<String>,
+    name: Option<String>,
+    activity: Option<String>,
+    mood: Option<String>,
+) -> Vec<roster::Peer> {
+    let raw = id.unwrap_or_default();
+    let who = if raw.trim().is_empty() {
+        active_character()
+    } else {
+        raw
+    };
+    roster::touch(
+        &who,
+        &name.unwrap_or_default(),
+        &activity.unwrap_or_default(),
+        &mood.unwrap_or_default(),
+        now_ms(),
+    )
 }
 
 #[tauri::command]
@@ -2435,6 +2498,7 @@ pub fn run() {
             dsc_diary_read,
             dsc_diary_save,
             dsc_turn_report,
+            dsc_roster_touch,
             dsc_sense_reserve,
             dsc_sense_apply,
             dsc_proactive,

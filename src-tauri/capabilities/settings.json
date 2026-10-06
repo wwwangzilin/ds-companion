@@ -72,6 +72,7 @@
     "allow-dsc-avatar-get",
     "allow-dsc-avatar-set",
     "allow-dsc-avatar-clear",
-    "allow-dsc-avatar-matrix"
+    "allow-dsc-avatar-matrix",
+    "allow-dsc-roster-touch"
   ]
 }

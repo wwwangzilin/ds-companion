@@ -59,6 +59,7 @@ fn main() {
             "memory_ingest",
             // 页面侧的角色状态：回报一轮 / 感知额度预约与落盘 / 空闲主动 / 任务栏提醒
             "dsc_turn_report",
+            "dsc_roster_touch",
             "dsc_sense_reserve",
             "dsc_sense_apply",
             "dsc_proactive",

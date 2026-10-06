@@ -301,6 +301,9 @@
     addBlock('场景', TURN.scene);
     addBlock('关系', TURN.relation);
     addBlock('待回访', TURN.pending);
+    // 这两块是**背景**不是任务：Rust 那边已经把「可以提也可以不提」写进块尾了
+    addBlock('他手上的东西', TURN.recent);
+    addBlock('同住', TURN.peer);
     addBlock('边界', boundaryText());
     // ★参数名是 `rawText`（augment 的形参），不是 rawBody★ —— 写成 rawBody 会让
     // augment 每轮抛 ReferenceError，而这等于**整条注入链断掉**（比少注一块严重得多）。
@@ -432,6 +435,8 @@
     paintAvatarVariant();
     // 活动标签放哪儿取决于"立绘在不在、HUD 开没开"，所以每次 HUD 重绘都让它重新落位
     paintActivity();
+    // 干活时「我在，但不烦你」：HUD 变淡、立绘收着、活动那行隐去
+    applyQuietMode();
     var el = document.getElementById('dsc-hud');
     if (!el) return;
     var s = CFG.state || {};
@@ -716,7 +721,14 @@
       el.style.display = 'none';
       return;
     }
-    if (el.textContent !== activity) el.textContent = activity;
+    if (el.textContent !== activity) {
+      el.textContent = activity;
+      // 她可能刚从"出去"变成"回来"（或反过来）—— 立绘的半透明得跟着动，
+      // 不然要等到下一次呼吸/姿态重绘才纠正
+      paintAvatarPose();
+    }
+    // 顺手报一次"她还在场"（自带去重，重复调是安全的）
+    pushRoster();
     // ★placeActivity 会整体重写 cssText（把 display 一并冲掉），所以 display 必须
     //   在它之后设★ —— 顺序反了就会"算出来有活动、屏幕上却什么都没有"。
     var avOn = placeActivity(el);
@@ -785,6 +797,50 @@
     s = s.trim();
     if (!s) return '';
     return s.length > 40 ? s.slice(0, 40) : s;
+  }
+
+  /**
+   * 她"不在这个房间"时，立绘收成半透明 —— 比如活动是「去翻厨房」。
+   *
+   * 【为什么是半透明而不是隐藏】完全消失会让人以为立绘坏了（这个项目已经因为
+   * "东西在那儿但看不见"挨过好几次报障）。半透明读作"她出去了一下"，一眼就懂；
+   * 而且"她不在了"这件事本身就是信息。
+   *
+   * 【为什么用关键词、不让她多报一个字段】"在不在这个房间"是**活动本身**的性质；
+   * 让模型多报一个字段就得再动一次协议，而且它一定会漏报。这几个词够用了。
+   */
+  var AWAY_WORDS = [
+    '厨房', '冰箱', '出门', '出去', '在外面', '阳台', '楼下', '灶台',
+    '浴室', '洗手间', '跑去', '溜出去',
+  ];
+
+  function activityAway() {
+    if (!activity) return false;
+    for (var i = 0; i < AWAY_WORDS.length; i++) {
+      if (activity.indexOf(AWAY_WORDS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  /** 报一次"她还在场" —— 别的角色登场时能看到她在干嘛。活动没变就不重复发。 */
+  var rosterSent = '';
+  function pushRoster() {
+    if (!CFG.personaId) return;
+    var sig = CFG.personaId + '|' + activity;
+    if (sig === rosterSent) return;
+    rosterSent = sig;
+    try {
+      invoke('dsc_roster_touch', {
+        id: CFG.personaId,
+        name: CFG.personaName || '',
+        activity: activity,
+        mood: (CFG.state && CFG.state.mood) || '',
+      })['catch'](function (e) {
+        log('roster-failed ' + e);
+      });
+    } catch (e) {
+      log('roster-error ' + e);
+    }
   }
 
   function askActivity() {
@@ -856,6 +912,43 @@
     paintActivity();
     // 顺便看看该不该请模型写一条 —— 它自带三道闸，15 秒调一次是安全的
     maybeAskActivity();
+  }
+
+  // ─────────────── 干活时的「我在，但不烦你」 ───────────────
+  //
+  // 【为什么要有它】`taskMode`（工作模式）原来只压**注入文本** —— 界面上她还是满格
+  // 存在：HUD 亮着、立绘站着、活动那行挂着。而干活的人需要的是"她还在，但不占地方"。
+  //
+  // 【为什么立绘走类名 + !important】它那层的 inline `opacity` 被"淡入"（paintAvatar）
+  // 共用，直接在 quiet 时改 inline，下一帧就被盖回去了 —— 只能从 CSS 那侧压。
+  function mountQuietStyle() {
+    if (document.getElementById('dsc-quiet-style')) return;
+    try {
+      var st = document.createElement('style');
+      st.id = 'dsc-quiet-style';
+      st.textContent =
+        'body.dsc-quiet #dsc-avatar{opacity:.45!important;filter:saturate(.7);' +
+        'transition:opacity .45s ease, filter .45s ease}' +
+        'body.dsc-quiet #dsc-activity{opacity:0!important;transition:opacity .45s ease}';
+      document.head.appendChild(st);
+    } catch (e) {
+      log('quiet-style-failed ' + e);
+    }
+  }
+
+  /** 每轮由 paintHud 调一次：进出工作模式时界面就跟着变（不用等下一次配置推送） */
+  function applyQuietMode() {
+    var quiet = !!CFG.taskMode;
+    var hud = document.getElementById('dsc-hud');
+    if (hud) {
+      hud.style.transition = 'opacity .45s ease';
+      hud.style.opacity = quiet ? '0.34' : '1';
+    }
+    try {
+      document.body.classList.toggle('dsc-quiet', quiet);
+    } catch (e) {
+      /* ignore */
+    }
   }
 
   // ─────────────────────── 对话留档 ───────────────────────
@@ -986,6 +1079,8 @@
         TURN.scene = r.sceneText || '';
         TURN.relation = r.relationText || '';
         TURN.pending = r.pendingText || '';
+        TURN.recent = r.recentText || '';
+        TURN.peer = r.peerText || '';
         // 本地判定贴着门槛 → 请模型再判一次，结果覆盖本地。只影响**下一轮**的注入
         //（本轮请求早发出去了，这也是任务模式本来的粒度）。
         if (r.wantTaskJudge) judgeTaskIntent(userText);
@@ -1066,7 +1161,7 @@
   // 【为什么不能塞进 CFG】`push_config` 一来就是**整份换掉** CFG（配置一变就推一份新的），
   // 那三个字段不在 payload 里，会被一起冲成 undefined —— 实测就是这么丢的：刚拿到
   // 场景/关系，一改配置（比如设个雷点）它们就没了，而界面上什么异常都看不到。
-  var TURN = { scene: '', relation: '', pending: '' };
+  var TURN = { scene: '', relation: '', pending: '', recent: '', peer: '' };
 
   var lastActivityAt = Date.now();
   var proactiveFiredForIdle = false;
@@ -2195,7 +2290,8 @@
     } else {
       y = 14;
     }
-    box.style.opacity = AVATAR.on ? '1' : '0';
+    // 她"出去了"就收成半透明（见 activityAway）—— 不是隐藏，是"人不在这儿"
+    box.style.opacity = AVATAR.on && activityAway() ? '0.18' : AVATAR.on ? '1' : '0';
     box.style.transform = 'translateY(' + y + 'px) scale(' + scale + ')';
     applyAvatarBreath();
   }
@@ -2797,6 +2893,39 @@
     activityAskBlock = Math.floor(Date.now() / ACTIVITY_BLOCK_MS);
     return activityAskBlock;
   };
+  /**
+   * 验收用：把"这一块问过了"的标记**清掉**。
+   *
+   * 【为什么必须有它】`activityAskBlock` 是**页面状态**：上一轮脚本在末尾标过一笔，
+   * 而 exe 不重启它就一直在 —— 下一轮跑到"该不该问"时全成了 false，假红。
+   * 验收脚本开头一律先复位（这个坑这个项目已经踩过好几次了）。
+   */
+  window.__DSC_ACTIVITY_RESET_ASKED__ = function () {
+    activityAskBlock = -1;
+    return true;
+  };
+  /** 调试/验收用：直接指定当前活动（验"她跑出去时立绘变淡"这类跟活动挂钩的表现）。 */
+  window.__DSC_ACTIVITY_SET__ = function (text) {
+    activity = String(text || '').slice(0, 40);
+    paintActivity();
+    return activity;
+  };
+  /** 调试/验收用：这条活动算不算"她不在这个房间"。 */
+  window.__DSC_ACTIVITY_AWAY__ = function () {
+    return activityAway();
+  };
+  /**
+   * 调试/验收用：直接切"安静模式"。
+   *
+   * 【为什么不能靠推配置】`__DSC_SET_CONFIG__` 里有一行 `CFG.taskMode = false`
+   * （配置推送里没有实时的任务模式，那是每轮算出来的）—— 推配置永远进不了安静模式，
+   * 只能从这儿切。
+   */
+  window.__DSC_QUIET__ = function (on) {
+    CFG.taskMode = !!on;
+    applyQuietMode();
+    return !!CFG.taskMode;
+  };
   /** 验收用：几个标签在此刻成不成立（验条件标签用）。 */
   window.__DSC_ACTIVITY_FITS__ = function (tags) {
     return activityFits(
@@ -2842,6 +2971,7 @@
     mountSync();
     mountAvatarEye();
     mountActivity();
+    mountQuietStyle();
     if (mounted) return;
     mounted = true;
     // 空闲判定：任何交互都算"主人在"

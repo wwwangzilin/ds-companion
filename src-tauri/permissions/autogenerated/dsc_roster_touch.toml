@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-roster-touch"
+description = "Enables the dsc_roster_touch command without any pre-configured scope."
+commands.allow = ["dsc_roster_touch"]
+
+[[permission]]
+identifier = "deny-dsc-roster-touch"
+description = "Denies the dsc_roster_touch command without any pre-configured scope."
+commands.deny = ["dsc_roster_touch"]

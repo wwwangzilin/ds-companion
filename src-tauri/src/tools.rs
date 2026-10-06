@@ -227,6 +227,139 @@ pub fn workspace() -> Option<PathBuf> {
     fs::canonicalize(&p).ok()
 }
 
+// ───────────────────── 工作区最近动过的文件 ─────────────────────
+//
+// 【它解决什么】让她"看得见你在干什么"。工具层本来就能读文件，但那是**她主动调用**
+// 才读得到；这里是把"最近动过什么"顺手带进注入 —— 零请求。于是她说出来的不是随机
+// 的关心，而是"那个文件你今天改第六遍了，是不是又卡在同一个地方"。
+//
+// 【为什么不递归到底】工作区可能是几十万文件的树，而这条**每轮**都要算一次 ——
+// 扫全树会让每一轮都卡一下。所以：只下探两层、最多看 MAX_SCAN 个条目、
+// 跳过依赖与构建产物，结果再缓存 60 秒。
+//
+// 【为什么只报"多久之前"、不报"改了几次"】mtime 只有一个时间戳，没有历史。
+// 想报次数得自己存快照（那是另一套东西，还会跟着数据目录一起长）。这里不假装有。
+
+/// 扫的时候跳过的目录名 —— 依赖与构建产物天天在变，报出来全是噪音
+const SCAN_SKIP: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "vendor",
+    ".cache",
+    "coverage",
+];
+/// 一次扫描最多看多少个条目（防超大工作区把这一轮拖死）
+const MAX_SCAN: usize = 4000;
+/// 缓存多久（每轮都问它，不能每轮都扫盘）
+const RECENT_TTL_MS: u64 = 60_000;
+
+static RECENT_CACHE: std::sync::Mutex<Option<(u64, Vec<(String, u64)>)>> =
+    std::sync::Mutex::new(None);
+
+/// 工作区里最近 `within_ms` 内动过的文件，越新越靠前。返回 `(相对路径, 距今毫秒)`。
+pub fn recent_files(within_ms: u64, top: usize) -> Vec<(String, u64)> {
+    let Some(root) = workspace() else {
+        return Vec::new();
+    };
+    let now = std::time::SystemTime::now();
+    let mut found: Vec<(String, u64)> = Vec::new();
+    let mut seen = 0usize;
+    // 手写栈而不是递归：深度可控，也不会在怪的目录结构上爆栈
+    let mut dirs: Vec<(PathBuf, usize)> = vec![(root.clone(), 0)];
+    while let Some((dir, depth)) = dirs.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            seen += 1;
+            if seen > MAX_SCAN {
+                break;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            // DirEntry::metadata **不跟随符号链接** —— 正好，省得在链接环里绕
+            let Ok(md) = e.metadata() else { continue };
+            if md.is_dir() {
+                if depth < 1 && !name.starts_with('.') && !SCAN_SKIP.contains(&name.as_str()) {
+                    dirs.push((e.path(), depth + 1));
+                }
+                continue;
+            }
+            let Ok(mtime) = md.modified() else { continue };
+            let Ok(age) = now.duration_since(mtime) else {
+                continue;
+            };
+            let age_ms = age.as_millis() as u64;
+            if age_ms > within_ms {
+                continue;
+            }
+            let path = e.path();
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap_or(path.as_path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            found.push((rel, age_ms));
+        }
+    }
+    found.sort_by(|a, b| a.1.cmp(&b.1));
+    found.truncate(top);
+    found
+}
+
+/// 带缓存的那一层（注入每轮都要问它）
+pub fn recent_files_cached(within_ms: u64, top: usize) -> Vec<(String, u64)> {
+    let now = now_ms();
+    if let Ok(g) = RECENT_CACHE.lock() {
+        if let Some((at, v)) = g.as_ref() {
+            if now.saturating_sub(*at) < RECENT_TTL_MS {
+                return v.clone();
+            }
+        }
+    }
+    let fresh = recent_files(within_ms, top);
+    if let Ok(mut g) = RECENT_CACHE.lock() {
+        *g = Some((now, fresh.clone()));
+    }
+    fresh
+}
+
+/// 「多久之前」说人话
+pub fn ago_text(ms: u64) -> String {
+    let m = ms / 60_000;
+    if m < 1 {
+        "刚刚".to_string()
+    } else if m < 60 {
+        format!("{m} 分钟前")
+    } else if m < 60 * 24 {
+        format!("{} 小时前", m / 60)
+    } else {
+        format!("{} 天前", m / 60 / 24)
+    }
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::ago_text;
+
+    #[test]
+    fn ago_text_says_human_words() {
+        assert_eq!(ago_text(0), "刚刚");
+        // 30 秒也算"刚刚" —— 报"0 分钟前"很蠢
+        assert_eq!(ago_text(30_000), "刚刚");
+        assert_eq!(ago_text(5 * 60_000), "5 分钟前");
+        assert_eq!(ago_text(59 * 60_000), "59 分钟前");
+        assert_eq!(ago_text(3 * 60 * 60_000), "3 小时前");
+        assert_eq!(ago_text(2 * 24 * 60 * 60_000), "2 天前");
+    }
+}
+
 /// 判一个路径是否落在工作区内。
 ///
 /// 两个必须处理的 Windows 现实（踩一次就够）：

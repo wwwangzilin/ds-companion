@@ -413,6 +413,10 @@ check(
 await call(`'persona_delete', { id: '${PID}' }`).catch(() => 0);
 
 // ── F. 让模型写那条：**机制层**（不真发请求）──────────────────────
+// 【先复位页面状态】`activityAskBlock` 是页面上的东西：上一轮脚本在末尾标过"这一块
+// 问过了"，exe 不重启它就一直在 —— 不复位的话下面两条必然假红。这个坑本项目踩过
+// 好几次了（记忆列表的筛选档、立绘选中的那一格），所以一律在开头复位。
+await evalIn(main, `window.__DSC_ACTIVITY_RESET_ASKED__()`);
 // 真链路由 .verify/probe-activity-ask.mjs 手动跑 —— 它真花一次额度，而且结果取决于
 // 模型当时的发挥，拿它当断言就是间歇性假红。这里只验"该不该问"和"收到之后怎么收拾"，
 // 这两样才是会**静默**出错的地方（多问一次就是白烧一次；清洗漏了就是难看的一行）。
@@ -491,6 +495,122 @@ check(
   '',
 );
 check('prompt 明确要求「只输出这一行」（防她写小作文）', actPrompt.indexOf('只输出这一行') !== -1, '');
+
+// ── G. 这一轮新加的四件事 ──────────────────────────────────────────
+//
+// 【为什么这里统一等 900ms】立绘的 opacity 带 `transition: .45s ease` —— 改完之后
+// **立刻**读 `getComputedStyle` 拿到的是动画中间值（实测 0.471745 而不是 0.45）。
+// 第一版四条断言全红就是这么来的：看着像功能没做，其实是量早了一拍。
+const settleAvatar = () => sleep(900);
+
+// ① 干活时「我在，但不烦你」
+await evalIn(main, `window.__DSC_QUIET__(true)`);
+await settleAvatar();
+const quiet = JSON.parse(
+  await evalIn(
+    main,
+    `(() => {
+       const hud = document.getElementById('dsc-hud');
+       const av = document.getElementById('dsc-avatar');
+       const act = document.getElementById('dsc-activity');
+       return JSON.stringify({
+         cls: document.body.classList.contains('dsc-quiet'),
+         hud: hud ? getComputedStyle(hud).opacity : '',
+         av: av ? getComputedStyle(av).opacity : '',
+         act: act ? getComputedStyle(act).opacity : '',
+       });
+     })()`,
+  ),
+);
+check('★ 干活时进安静模式（body 上有标记）', quiet.cls === true, JSON.stringify(quiet));
+check('★ 干活时 HUD 变淡', quiet.hud === '0.34', `hud=${quiet.hud}`);
+check('★ 干活时立绘收着（靠 CSS !important 压，因为它的 inline opacity 被淡入占用）', quiet.av === '0.45', `avatar=${quiet.av}`);
+check('干活时活动那行隐去', quiet.act === '0', `act=${quiet.act}`);
+
+await evalIn(main, `window.__DSC_QUIET__(false)`);
+await settleAvatar();
+const awake = JSON.parse(
+  await evalIn(
+    main,
+    `(() => {
+       const hud = document.getElementById('dsc-hud');
+       const av = document.getElementById('dsc-avatar');
+       return JSON.stringify({
+         cls: document.body.classList.contains('dsc-quiet'),
+         hud: hud ? getComputedStyle(hud).opacity : '',
+         av: av ? getComputedStyle(av).opacity : '',
+       });
+     })()`,
+  ),
+);
+check('★ 回到日常 → 标记撤掉、HUD 恢复', awake.cls === false && awake.hud === '1', JSON.stringify(awake));
+check('★ 回到日常 → 立绘恢复', awake.av === '1', `avatar=${awake.av}`);
+
+// ② 她跑出去了：立绘收成半透明
+await evalIn(main, `window.__DSC_ACTIVITY_SET__('去翻你的冰箱')`);
+await settleAvatar();
+const away = JSON.parse(
+  await evalIn(
+    main,
+    `(() => {
+       const av = document.getElementById('dsc-avatar');
+       return JSON.stringify({
+         isAway: window.__DSC_ACTIVITY_AWAY__(),
+         av: av ? getComputedStyle(av).opacity : '',
+         text: window.__DSC_ACTIVITY__().text,
+       });
+     })()`,
+  ),
+);
+check('★ 「去翻冰箱」判成她不在这个房间', away.isAway === true, JSON.stringify(away));
+check(
+  '★ 她出去时立绘收成半透明（不是消失 —— 消失会被当成立绘坏了）',
+  away.av === '0.18',
+  `avatar=${away.av}`,
+);
+
+await evalIn(main, `window.__DSC_ACTIVITY_SET__('趴在桌上打盹')`);
+await settleAvatar();
+const home = JSON.parse(
+  await evalIn(
+    main,
+    `(() => {
+       const av = document.getElementById('dsc-avatar');
+       return JSON.stringify({
+         isAway: window.__DSC_ACTIVITY_AWAY__(),
+         av: av ? getComputedStyle(av).opacity : '',
+       });
+     })()`,
+  ),
+);
+check('★ 换回在屋里的活动 → 立绘回来', home.isAway === false && home.av === '1', JSON.stringify(home));
+
+// ③ 她们互相知道：报"在场" → 注入时出现在【同住】块里
+const peerRes = await call(
+  `'dsc_roster_touch', { id: 'verify-peer-role', name: '验收同伴', activity: '在拆耳机线', mood: '雀跃' }`,
+);
+check(
+  '★ 报"在场"能存下来',
+  Array.isArray(peerRes) && peerRes.some((p) => p.id === 'verify-peer-role'),
+  JSON.stringify(peerRes).slice(0, 160),
+);
+
+// ④ 两个新块真的进了注入载荷
+const r4 = await call(`'dsc_turn_report', { userText: '验收', hour: 12, activity: '验收用的活动·甲' }`);
+check('★ 注入载荷里有【同住】字段（peerText）', !!(r4 && typeof r4.peerText === 'string'), typeof (r4 && r4.peerText));
+check(
+  '★★ 别的角色真的出现在【同住】块里',
+  !!(r4 && r4.peerText && r4.peerText.indexOf('验收同伴') !== -1),
+  String(r4 && r4.peerText).slice(0, 220),
+);
+check(
+  '★ 【同住】块留了退路（"可以提也可以不提"，不然她会每轮播报）',
+  !!(r4 && r4.peerText && r4.peerText.indexOf('也可以完全不提') !== -1),
+  '',
+);
+check('★ 注入载荷里有【他手上的东西】字段（recentText）', !!(r4 && typeof r4.recentText === 'string'), typeof (r4 && r4.recentText));
+
+await evalIn(main, `window.__DSC_ACTIVITY_SET__('')`);
 
 console.log(`\n${failed === 0 ? 'ALL PASS' : `${failed} FAILED`}`);
 process.exit(failed ? 1 : 0);
