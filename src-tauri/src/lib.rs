@@ -367,6 +367,12 @@ struct TurnReport {
     front_text: String,
     /// 【他屏幕上】块正文（空 = 不加）—— 屏幕上的字（要 `screen_watch` 开着，且和上轮不同）
     screen_text: String,
+    /// 等她**亲眼看**的一张截图（base64 PNG + 尺寸）。
+    ///
+    /// 【为什么走这条路回页面】上传图片要用页面的登录态和 PoW，壳里做不了 ——
+    /// 所以壳只负责"截好、缩好、把鼠标圈画上"，图交给页面去传、去问，
+    /// 拿到的那段描述再由页面调 `dsc_screen_see` 送回来。**取走即清**，每张图只给一次。
+    screen_shot: Option<screen::Shot>,
     /// 通路自检的告警（空 = 没看出问题）。
     ///
     /// 【为什么要跟着每轮回来】"机制没坏、通路断了"这类问题（情绪冻结、饿着没人管）
@@ -507,6 +513,7 @@ fn dsc_turn_report(
             peer_text: String::new(),
             front_text: String::new(),
             screen_text: String::new(),
+            screen_shot: None,
             vitals: Vec::new(),
         };
     }
@@ -682,6 +689,12 @@ fn dsc_turn_report(
     // 【他屏幕上】—— 屏幕上的字。要 `screen_watch` 开着，而且**这一段和上一轮不同**
     // 才会出现（同一个页面盯久了不该每轮都把那 240 字塞进上下文）。
     let screen_text = screen::render_block(&cfg);
+    // 她"亲眼看"那条路：手上有一张新图就交给页面（取走即清，每张只给一次）。
+    // 没图就是 None，页面什么都不用做。
+    let screen_shot = screen::take_shot();
+    if screen_shot.is_some() {
+        shell_log("[screen] 交一张截图给页面（她亲眼看）");
+    }
 
     shell_log(&format!(
         "[state] turn={} mood={} v={:.2} aff={} energy={:.2} | body 困={:.2} 体={:.2} 饿={:.2} hr={}{} | user {} 精力={:.2} 投入={:.2}{}{} | hits={} wantModel={} | task={}{}",
@@ -755,6 +768,7 @@ fn dsc_turn_report(
         peer_text,
         front_text,
         screen_text,
+        screen_shot,
         vitals,
     }
 }
@@ -2044,6 +2058,22 @@ async fn dsc_screen_now() -> screen::Snapshot {
         .unwrap_or_default()
 }
 
+/// 页面看完了那张截图，把她**亲眼**看到的那段送回来（"在做什么 + 重点在哪"）。
+///
+/// 【为什么这件事必须由页面做】上传图片要用页面的登录态和 PoW（见 `screen::Shot` 的注释），
+/// 所以"她看到了什么"只有页面知道。壳这边只负责记住它 —— 下一轮拼【他屏幕上】时
+/// 优先用它，而不是本地 OCR 那堆字。
+#[tauri::command]
+fn dsc_screen_see(text: String, size: Option<String>) -> bool {
+    let ok = screen::note_seen(&text, size.as_deref().unwrap_or(""));
+    shell_log(&format!(
+        "[screen] 她亲眼看了：{}（{} 字）",
+        if ok { "收到了" } else { "空回复，丢掉" },
+        text.chars().count()
+    ));
+    ok
+}
+
 // ─────────────────────── 用对话同步设置 ───────────────────────
 //
 // 打包在壳里（文件都在这儿），发消息在页面里（只有它有登录态）—— 所以这里是
@@ -2729,6 +2759,7 @@ pub fn run() {
             dsc_front_app,
             dsc_screen_state,
             dsc_screen_now,
+            dsc_screen_see,
             dsc_sense_reserve,
             dsc_sense_apply,
             dsc_proactive,

@@ -25,6 +25,8 @@ pub const MAX_MINUTES: u32 = 60;
 /// 送进对话的字数范围
 pub const MIN_CHARS: u32 = 60;
 pub const MAX_CHARS: u32 = 800;
+/// 她"亲眼看"回来交的那段最多留多少字 —— 模型输出长度不可控，而它要进下一轮上下文
+pub const SEE_CHARS: usize = 300;
 /// 后台每这么久醒一次看看该不该到点了（比最小间隔小，改了设置能较快生效）
 pub const TICK_SECS: u64 = 15;
 /// 子进程最多等这么久；超了就放弃这一次（下一次到点再来）
@@ -54,6 +56,31 @@ pub struct Snapshot {
     pub say: String,
     /// 那句话是什么时候说的（ms）—— 桌宠据此判断"这句话是不是已经过时了"
     pub say_at: u64,
+    /// 她**亲眼**看过之后回来说的那段（多模态那条路）。空 = 这次没走那条路
+    pub see: String,
+    /// 那段是什么时候回来的（ms）
+    pub see_at: u64,
+    /// 她看的那张图缩到多大（"512x319"）。空 = 这次没生成图
+    pub see_size: String,
+}
+
+/// 一张等着页面来取的图（她"亲眼看"那条路）。
+///
+/// 【为什么不放进 `Snapshot`】`Snapshot` 每 15 秒被设置页拉一次（`dsc_screen_state`），
+/// 里面塞一份 30KB 的 base64 会让 IPC 和界面一起变慢。图只在页面真要注入时取一次。
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Shot {
+    /// base64（**不带** data: 前缀 —— 页面自己拼）
+    pub b64: String,
+    pub w: u32,
+    pub h: u32,
+    /// 图上有没有画鼠标圈（false = 截图那一刻鼠标不在这一块里）
+    pub cursor: bool,
+    /// 是什么时候截的（ms）
+    pub at: u64,
+    /// 截的是哪块区域（"2880x1860"）
+    pub size: String,
 }
 
 /// 上一次尝试的时间 + 最近一次结果。**只在内存里**：退出即散。
@@ -61,12 +88,21 @@ pub struct Snapshot {
 struct State {
     last_try: u64,
     snap: Option<Snapshot>,
+    /// 等着页面来取的那张图
+    shot: Option<Shot>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
 /// 上一轮注入进对话的那段文本 —— 和这次一模一样就不再注入（同一个页面盯久了不该每轮都花额度）
 static LAST_INJECTED: Mutex<Option<String>> = Mutex::new(None);
+
+/// 上一张**已经生成过图**的屏幕内容（拿清洗后的 OCR 文本当指纹）。
+///
+/// 【为什么用 OCR 文本当"变更探测器"】同一页盯半小时，OCR 出来的字一模一样 ——
+/// 那就没必要每 5 分钟花 200 token 让她重看同一张图。本地 OCR 是零成本的，
+/// 拿它当门铃、拿多模态当眼睛，这就是"OCR 当备份"这句话的正确用法。
+static LAST_SHOT_FOR: Mutex<Option<String>> = Mutex::new(None);
 
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
     let mut g = match STATE.lock() {
@@ -299,6 +335,16 @@ pub fn parse_output(stdout: &str) -> (std::collections::HashMap<String, String>,
             }
             continue;
         }
+        // 【这一行不能当文字行收进去】`#img` 后面是几十 K 字符的 base64 —— 混进 lines 里
+        // 就成了"屏幕上的字"，会把真正的内容全挤掉。单独存到 meta 的另一个键上。
+        // 注意 meta 里那个 `img=512x331` 是**尺寸**，两个键别搞混。
+        if let Some(b64) = l.strip_prefix("#img ") {
+            let t = b64.trim();
+            if !t.is_empty() {
+                meta.insert("imgb64".to_string(), t.to_string());
+            }
+            continue;
+        }
         if !l.trim().is_empty() {
             lines.push(l.to_string());
         }
@@ -363,6 +409,82 @@ fn run_ocr() -> Result<(std::collections::HashMap<String, String>, Vec<String>),
             Err(format!("OCR 超过 {} 秒没回来", RUN_TIMEOUT.as_secs()))
         }
     }
+}
+
+/// 解析 `ocr.ps1` 输出里"图缩到多大"那一栏（"512x319"）
+fn parse_size(s: &str) -> (u32, u32) {
+    match s.split_once('x') {
+        Some((a, b)) => (a.trim().parse().unwrap_or(0), b.trim().parse().unwrap_or(0)),
+        None => (0, 0),
+    }
+}
+
+/// 造一张"等她看"的图。`None` = 这次没图、或者**内容和上次给她看的一模一样**。
+///
+/// 【为什么"内容没变就不造"】同一页盯半小时，OCR 出来的字一个不差 —— 那就没必要每 5 分钟
+/// 花 200 token 让她重看一张没变的图。指纹用**清洗后的 OCR 文本**，因为它是零成本的：
+/// 拿本地 OCR 当门铃、拿多模态当眼睛，这才是"OCR 当备份"的正确用法。
+///
+/// 【注意别在 `with_state` 里调它】它内部会锁 `LAST_SHOT_FOR` —— 两把锁不是同一把，
+/// 这个函数自己是安全的；但它**返回**的东西要由调用方塞进 State，别写成嵌套的 with_state。
+fn shot_from(
+    meta: &std::collections::HashMap<String, String>,
+    text: &str,
+) -> Option<Shot> {
+    let b64 = match meta.get("imgb64") {
+        Some(s) if !s.is_empty() => s.clone(),
+        _ => return None,
+    };
+    {
+        let mut last = match LAST_SHOT_FOR.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if last.as_deref() == Some(text) {
+            return None;
+        }
+        *last = Some(text.to_string());
+    }
+    let (w, h) = parse_size(meta.get("img").map(String::as_str).unwrap_or(""));
+    Some(Shot {
+        b64,
+        w,
+        h,
+        cursor: meta.get("cursor").map(String::as_str) == Some("1"),
+        at: crate::now_ms(),
+        size: format!(
+            "{}x{}",
+            meta.get("w").cloned().unwrap_or_default(),
+            meta.get("h").cloned().unwrap_or_default()
+        ),
+    })
+}
+
+/// 页面来取"最近一张等她看的图"。**取走即清** —— 同一张图不该让页面看两遍。
+pub fn take_shot() -> Option<Shot> {
+    if !crate::config::load().screen_watch {
+        return None;
+    }
+    with_state(|s| s.shot.take())
+}
+
+/// 页面看完回来交作业：她**亲眼**看到的那段（"在做什么 + 重点在哪"）。
+///
+/// 【为什么要截断】这是模型的自由输出，长度不可控，而它下一轮就要进上下文。
+pub fn note_seen(text: &str, size: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() {
+        return false;
+    }
+    with_state(|s| {
+        let snap = s.snap.get_or_insert_with(Snapshot::default);
+        snap.see = clip_chars(t, SEE_CHARS);
+        snap.see_at = crate::now_ms();
+        if !size.is_empty() {
+            snap.see_size = size.to_string();
+        }
+    });
+    true
 }
 
 /// 这一次不该看的原因（空 = 可以看）。
@@ -435,6 +557,13 @@ pub fn tick() -> bool {
                 );
                 snap.say = say;
                 snap.say_at = say_at;
+                // 留一张图等页面来取（她"亲眼看"那条路）。开关关着就不造 —— 造了也没人要，
+                // 白花缩图和编码那几十毫秒。
+                if cfg.screen_see {
+                    if let Some(shot) = shot_from(&meta, &text) {
+                        s.shot = Some(shot);
+                    }
+                }
                 snap.text = text;
             }
             Err(e) => {
@@ -500,6 +629,11 @@ pub fn look_now() -> Snapshot {
                 snap.chars = text.chars().count() as u32;
                 snap.say = say;
                 snap.say_at = say_at;
+                if cfg.screen_see {
+                    if let Some(shot) = shot_from(&meta, &text) {
+                        s.shot = Some(shot);
+                    }
+                }
                 snap.text = text;
                 snap.mode = meta.get("mode").cloned().unwrap_or_default();
                 snap.size = format!(
@@ -528,7 +662,14 @@ pub fn render_block(cfg: &crate::config::AppConfig) -> String {
         return String::new();
     }
     let snap = snapshot();
-    if snap.text.trim().is_empty() {
+    // 两条路，优先**她亲眼看过**的那条：它带"焦点在哪"，而 OCR 那版只有一堆字。
+    // 这个优先级是有意的 —— 主路是多模态，OCR 是兜底（它没花额度、但也不知道该看哪）。
+    let (head, body) = if !snap.see.trim().is_empty() {
+        ("【他屏幕上】你自己看了一眼，看到的是：", snap.see.clone())
+    } else {
+        ("【他屏幕上】大概写着这些：", snap.text.clone())
+    };
+    if body.trim().is_empty() {
         return String::new();
     }
     {
@@ -536,22 +677,31 @@ pub fn render_block(cfg: &crate::config::AppConfig) -> String {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        if last.as_deref() == Some(snap.text.as_str()) {
+        if last.as_deref() == Some(body.as_str()) {
             return String::new();
         }
-        *last = Some(snap.text.clone());
+        *last = Some(body.clone());
     }
     format!(
-        "【他屏幕上】大概写着这些：\n{}\n【这是你自己瞄到的一眼，不是他念给你听的：别复述、别逐条报，最多顺着提一句。真要用就拿它当由头，别当谈资。】",
-        snap.text
+        "{}\n{}\n【这是你自己瞄到的一眼，不是他念给你听的：别复述、别逐条报，最多顺着提一句。真要用就拿它当由头，别当谈资。】",
+        head, body
     )
 }
 
-/// 主人关掉这个开关时，把"上一轮注入过什么"清掉 —— 免得下次打开时第一轮被去重吃掉
+/// 主人关掉这个开关时，把去重状态清掉 —— 免得下次打开时第一轮被吃掉。
+///
+/// 【为什么连图指纹一起清】"关掉再打开"在心智上就是"重新开始"：不清指纹的话，
+/// 关掉前刚好看过的那一屏，重新打开后会被判成"没变过"而永远不再看第二眼。
+/// 验收脚本也靠这一下拿到干净的起点（否则同一块板子只能验第一次）。
 pub fn forget_last_injected() {
     if let Ok(mut g) = LAST_INJECTED.lock() {
         *g = None;
     }
+    if let Ok(mut g) = LAST_SHOT_FOR.lock() {
+        *g = None;
+    }
+    // 手上还攥着一张没人要的图也一起丢掉（关掉之后再取走它没有意义）
+    with_state(|s| s.shot = None);
 }
 
 #[cfg(test)]
@@ -715,5 +865,83 @@ mod tests {
         // 中文也要能过（这是整个方案的前提：脚本里有中文注释）
         let cn = encoded_command("中");
         assert!(!cn.is_empty());
+    }
+
+    /// 图那一行是几十 K 字符的 base64 —— **不能**混进"屏幕上的字"里
+    #[test]
+    fn parse_output_keeps_the_image_out_of_the_text_lines() {
+        let stdout = "#meta w=2880 h=1860 cursor=1 img=512x331\n第一行正文\n#img AAAABBBBCCCC\n第二行正文\n";
+        let (meta, lines) = parse_output(stdout);
+        assert_eq!(meta.get("img").map(String::as_str), Some("512x331"), "尺寸那一栏还得是尺寸");
+        assert_eq!(meta.get("imgb64").map(String::as_str), Some("AAAABBBBCCCC"));
+        // ★关键★ base64 不许出现成一行"文字"
+        assert_eq!(lines, vec!["第一行正文".to_string(), "第二行正文".to_string()]);
+        assert_eq!(meta.get("cursor").map(String::as_str), Some("1"));
+    }
+
+    /// 只有 `#img` 没内容时不该造出一个空的图
+    #[test]
+    fn parse_output_ignores_an_empty_image_line() {
+        let (meta, lines) = parse_output("#meta w=800 h=600\n正文\n#img \n");
+        assert!(!meta.contains_key("imgb64"));
+        assert_eq!(lines, vec!["正文".to_string()]);
+    }
+
+    #[test]
+    fn parse_size_handles_both_good_and_junk() {
+        assert_eq!(parse_size("512x331"), (512, 331));
+        assert_eq!(parse_size(""), (0, 0));
+        assert_eq!(parse_size("512"), (0, 0));
+        // 上游给不出数字时不能 panic，退成 0 就行（界面显示 0x0 也比崩了强）
+        assert_eq!(parse_size("axb"), (0, 0));
+    }
+
+    /// ★同一屏内容只造一次图★ —— 否则每 5 分钟花 200 token 重看一张没变的图。
+    ///
+    /// 这个测试碰的是模块级的 `LAST_SHOT_FOR`（全局），所以两种情形必须在**同一个测试**
+    /// 里连着验，别拆成两个（拆开跑的顺序不确定，会互相污染）。
+    #[test]
+    fn shot_is_built_once_per_screen_content() {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("imgb64".to_string(), "QUJD".to_string());
+        meta.insert("img".to_string(), "512x331".to_string());
+        meta.insert("w".to_string(), "2880".to_string());
+        meta.insert("h".to_string(), "1860".to_string());
+        meta.insert("cursor".to_string(), "1".to_string());
+
+        let first = shot_from(&meta, "唯一的第一段屏幕内容");
+        let shot = first.expect("第一次该造出图来");
+        assert_eq!(shot.b64, "QUJD");
+        assert_eq!((shot.w, shot.h), (512, 331));
+        assert!(shot.cursor, "cursor=1 要如实传下去");
+        assert_eq!(shot.size, "2880x1860");
+        assert!(shot.at > 0);
+
+        // ★同样的内容再来一次：不造★
+        assert!(shot_from(&meta, "唯一的第一段屏幕内容").is_none());
+        // 内容变了才再造
+        assert!(shot_from(&meta, "换了一屏完全不同的内容").is_some());
+        // 没有图数据（脚本没能编码出来）→ 什么都不造
+        assert!(shot_from(&std::collections::HashMap::new(), "又换了一屏").is_none());
+    }
+
+    /// 她"亲眼看"回来的那段：空的要拒掉，长的要截断（它下一轮就进上下文）
+    #[test]
+    fn note_seen_rejects_empty_and_clips_the_rest() {
+        assert!(!note_seen("   ", "512x331"), "空回复不该被记下来");
+
+        let long = "重点".repeat(SEE_CHARS); // 远超上限
+        assert!(note_seen(&long, "512x331"));
+        let snap = snapshot();
+        assert_eq!(snap.see.chars().count(), SEE_CHARS, "要截到 SEE_CHARS");
+        assert_eq!(snap.see_size, "512x331");
+        assert!(snap.see_at > 0);
+        // ★亲眼看过的那段要压过 OCR 那版★（render_block 的优先级就靠这个）
+        assert!(render_block(&{
+            let mut c = crate::config::AppConfig::default();
+            c.screen_watch = true;
+            c
+        })
+        .contains("你自己看了一眼"));
     }
 }

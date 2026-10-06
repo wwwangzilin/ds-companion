@@ -63,6 +63,7 @@ fn main() {
             "dsc_front_app",
             "dsc_screen_state",
             "dsc_screen_now",
+            "dsc_screen_see",
             "dsc_sense_reserve",
             "dsc_sense_apply",
             "dsc_proactive",

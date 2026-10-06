@@ -19,6 +19,7 @@
     "allow-memory-touch",
     "allow-memory-ingest",
     "allow-dsc-turn-report",
+    "allow-dsc-screen-see",
     "allow-dsc-roster-touch",
     "allow-dsc-sense-reserve",
     "allow-dsc-sense-apply",

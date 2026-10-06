@@ -1,0 +1,35 @@
+{
+  "note": "多模态验收台已经传上去的板子（上游没有删除接口，重跑时按宽度复用，别再传新的）",
+  "boards": [
+    {
+      "width": 1600,
+      "height": 1000,
+      "token": 962,
+      "fileId": "file-e361c795-fede-450a-8081-269b0fcfcd0b"
+    },
+    {
+      "width": 1280,
+      "height": 800,
+      "token": 642,
+      "fileId": "file-60bfb703-1778-4d40-a139-73bf74304876"
+    },
+    {
+      "width": 1024,
+      "height": 640,
+      "token": 418,
+      "fileId": "file-5e15e082-7f5b-4547-90e0-c86f29d2c89e"
+    },
+    {
+      "width": 768,
+      "height": 480,
+      "token": 242,
+      "fileId": "file-91772fa6-3784-4a92-b986-025f01af13fa"
+    },
+    {
+      "width": 512,
+      "height": 320,
+      "token": 200,
+      "fileId": "file-2a4759eb-9402-495e-8537-4b7b13e5c517"
+    }
+  ]
+}

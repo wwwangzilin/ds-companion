@@ -1057,6 +1057,64 @@
   // （__DSC_SENSE__ / __DSC_TASK_JUDGE__ / __DSC_DIARY__），这里保持一致。
   window.__DSC_WRITE_DIARY__ = writeDiary;
 
+  /**
+   * 把壳截好的那张图**亲眼**看一遍，然后把她看到的说给壳听。
+   *
+   * 【提示词是实测定下来的，别随手改】第一版问的是"这张图上写着什么？用一句话原样说出来" ——
+   * 她的回答永远是 5 个字，就是屏幕上最大的那个标题（主人原话：「只说个头，不去关注重点」）。
+   * 同一张图、同一个尺寸，换成下面这个问法，回答从 5 个字变成 63 个字，而且把 17px 的
+   * 警告框一字不差抄了出来。**问题从来不在模型，也不在分辨率**（实测缩到 512 宽连 13px
+   * 的页脚都还认得出）。
+   *
+   * 【为什么"照抄"这两个字不能省】不要求她抄原话，她就会概括成"一个关于 Rust 的文档" ——
+   * 抄出来才能看出她到底看清了没有，也只有原话能让我们判断她说得对不对。
+   *
+   * 【为什么必须告诉她圈是什么】Windows 的截图**不带鼠标指针**（BitBlt 不含光标），
+   * 所以她自己看不出主人在看哪一块、只能瞎猜。壳在图上画了洋红色的圈 —— 不点明这一句，
+   * 她可能把那圈当成屏幕内容的一部分。
+   */
+  function seeShot(shot) {
+    var util = window.__DSC_DS_UTIL__;
+    if (!util || typeof util.seeImage !== 'function') {
+      return Promise.reject(new Error('deepseek-client 没加载'));
+    }
+    var prompt =
+      '这是主人电脑屏幕的截图。回答两件事，各占一行，不要客套、不要复述我这句话：\n' +
+      '第一行「在做什么」：他正在看什么、干什么，一句话。\n' +
+      '第二行「重点」：整屏最该注意的那一处，把那上面写的字照抄出来。\n' +
+      (shot.cursor
+        ? '图上那个洋红色的圈是他鼠标停的地方，重点优先看那里。\n'
+        : '（这张图上没有圈 —— 截图那一刻他的鼠标不在这个窗口里。）\n') +
+      '看不清就直说看不清，别猜。';
+    var bin = atob(String(shot.b64 || ''));
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var blob = new Blob([bytes], { type: 'image/png' });
+    var size = (shot.w || 0) + 'x' + (shot.h || 0);
+    // 验收要看的就是这几项：图多大、有没有圈、她回了什么。**不存图本身**
+    // （30KB 常驻内存不值得，要看得去账号里看那张图）。
+    window.__DSC_LAST_SHOT__ = {
+      size: size,
+      cursor: !!shot.cursor,
+      bytes: blob.size,
+      screen: shot.size || '',
+      at: Date.now(),
+      text: '',
+      fileId: '',
+      err: '',
+    };
+    log('SEE 收图 ' + Math.round(blob.size / 1024) + 'KB ' + size + (shot.cursor ? ' 有圈' : ' 无圈'));
+    return util
+      .seeImage(blob, prompt, { filename: 'dsc-screen-' + Date.now() + '.png' })
+      .then(function (r) {
+        var text = (r && r.text) || '';
+        window.__DSC_LAST_SHOT__.text = text;
+        window.__DSC_LAST_SHOT__.fileId = (r && r.fileId) || '';
+        log('SEE ok ' + text.slice(0, 90).replace(/\n/g, ' / '));
+        return invoke('dsc_screen_see', { text: text, size: size });
+      });
+  }
+
   function reportTurn(userText) {
     if (!CFG.stateEnabled) return;
     invoke('dsc_turn_report', {
@@ -1091,6 +1149,15 @@
         TURN.front = r.frontText || '';
         // 「他屏幕上」：只在她开着屏幕感知、而且这一段和上一轮不同时才有
         TURN.screen = r.screenText || '';
+        // 【她亲眼看】壳手上有一张新截图就丢过来 —— 上传和提问只能用页面的登录态
+        // （PoW + cookie），壳里做不了，所以这段路必须走页面。看到的那段用
+        // `dsc_screen_see` 送回去，下一轮就拼进【他屏幕上】。
+        // 【为什么不 await】它要上传 + 等解析 + 提问，好几秒 —— 挡住了会把这一轮拖死。
+        if (r.screenShot && r.screenShot.b64) {
+          seeShot(r.screenShot)['catch'](function (e) {
+            log('SEE failed ' + e);
+          });
+        }
         // 本地判定贴着门槛 → 请模型再判一次，结果覆盖本地。只影响**下一轮**的注入
         //（本轮请求早发出去了，这也是任务模式本来的粒度）。
         if (r.wantTaskJudge) judgeTaskIntent(userText);
@@ -2781,6 +2848,144 @@
         { filename: 'dsc-vision-probe.png' },
       );
     });
+  };
+
+  /* ── 多模态验收台 ──────────────────────────────────────────────────────
+   *
+   * 【为什么要另画一张"假屏幕"】上面那个 __DSC_VISION_TRY__ 画的是 360×140、
+   * 只有两行大字的图 —— 它只能证明"通道通了"，证明不了"她读得懂屏幕"。
+   * 主人看了一眼就说：「只说个头，不去关注重点」。而那张图里**本来就只有个头**。
+   *
+   * 这一张是仿的文档页，三档字号故意拉开：
+   *   40px 大标题 / 17px 警告框 / 15px 正文 / 13px 页脚
+   * 缩到不同宽度后小字先糊、大标题最后糊 —— 正好用来量**分辨率阈值**：
+   * 她"只说个头"到底是图糊了，还是没被要求说重点。
+   *
+   * 【为什么整条链都在页面里跑】CDP 的 Runtime.evaluate 要把返回值 JSON 化搬出去，
+   * 一张 1600×1000 的 PNG 转 base64 是几百 KB，来回搬又慢又容易撞上限。
+   * 所以画图 → toBlob → 上传 → 提问全在页面里，只把结果搬出来。
+   */
+  function boardCanvas() {
+    var W = 1600, H = 1000;
+    var c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    var g = c.getContext('2d');
+    function put(s, x, y, font, color) {
+      g.font = font;
+      g.fillStyle = color;
+      g.fillText(s, x, y);
+    }
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = '#f3f4f6';
+    g.fillRect(0, 0, W, 56);
+    put('https://docs.example.com/guide/install', 24, 36, '18px sans-serif', '#6b7280');
+    g.fillStyle = '#fafafa';
+    g.fillRect(0, 56, 300, H - 56);
+    var nav = ['快速开始', '安装与配置', '目录结构', '构建与打包', '常见问题'];
+    for (var i = 0; i < nav.length; i++) put(nav[i], 28, 124 + i * 44, '17px sans-serif', '#374151');
+    put('安装与配置', 360, 150, 'bold 40px sans-serif', '#111827');
+    var body = [
+      '工具链需要 Rust 1.77 以上，MSVC 生成工具必须勾选。',
+      '编译前先停掉正在运行的实例，否则链接会失败。',
+      '默认数据目录在 %APPDATA%，可以用环境变量换一个位置。',
+      '打包体积大约 5MB，首次构建需要三到五分钟。',
+    ];
+    for (var j = 0; j < body.length; j++) put(body[j], 360, 226 + j * 52, '15px sans-serif', '#374151');
+    // 人造"重点"：整屏唯一一块有色底的东西
+    g.fillStyle = '#fef3c7';
+    g.fillRect(360, 490, 980, 110);
+    g.strokeStyle = '#f59e0b';
+    g.lineWidth = 2;
+    g.strokeRect(360, 490, 980, 110);
+    put('注意：有四个依赖包只在本机缓存里存在，清空缓存后会编译失败。', 384, 534, '17px sans-serif', '#92400e');
+    put('先备份 target 目录，或者换一台机器重新拉依赖。', 384, 572, '17px sans-serif', '#92400e');
+    g.fillStyle = '#7c3aed';
+    g.fillRect(1160, 860, 200, 58);
+    put('下一步：部署', 1196, 898, '20px sans-serif', '#ffffff');
+    put('最后更新：2026-10-06', 360, 940, '13px sans-serif', '#9ca3af');
+    return c;
+  }
+
+  function scaleCanvas(src, width) {
+    var w = Math.max(1, Math.round(width));
+    var h = Math.max(1, Math.round((src.height / src.width) * w));
+    var c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    var g = c.getContext('2d');
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(src, 0, 0, w, h);
+    return c;
+  }
+
+  function canvasBlob(c) {
+    return new Promise(function (resolve) {
+      c.toBlob(function (b) {
+        resolve(b);
+      }, 'image/png');
+    });
+  }
+
+  /**
+   * 探针：画板 → （可选缩放）→ 上传 → 等解析 → 读 token_usage →（可选）提问。
+   *
+   * opts = { width, prompt, fileId, mode: 'upload' | 'ask' }
+   *   · 给了 fileId 就**不再上传**：同一张图问不同的问题，少留垃圾（上游没有删除接口）
+   *   · mode='upload' 只上传 + 只读 token_usage，**不提问** —— 量成本曲线不花对话额度
+   */
+  window.__DSC_BOARD__ = async function (opts) {
+    var o = opts || {};
+    var util = window.__DSC_DS_UTIL__;
+    if (!util || typeof util.seeImage !== 'function') return { ok: false, err: 'deepseek-client 没加载' };
+    var t0 = Date.now();
+    var out = { ok: true, mode: o.mode || 'ask', width: o.width || 1600 };
+    try {
+      var fileId = o.fileId;
+      if (!fileId) {
+        var c = o.width && o.width !== 1600 ? scaleCanvas(boardCanvas(), o.width) : boardCanvas();
+        out.width = c.width;
+        out.height = c.height;
+        var blob = await canvasBlob(c);
+        out.bytes = blob.size;
+        var up = await util.uploadFile(blob, 'dsc-board-' + c.width + '.png');
+        fileId = up.id;
+      }
+      out.fileId = fileId;
+      for (var k = 0; k < 40; k++) {
+        var r = await util.fetchFiles([fileId]);
+        var f = ((r && r.files) || []).filter(function (x) {
+          return x && x.id === fileId;
+        })[0];
+        if (f) {
+          out.status = f.status;
+          out.tokenUsage = f.token_usage;
+          if (f.width) {
+            out.width = f.width;
+            out.height = f.height;
+          }
+          if (f.status === 'SUCCESS' || f.status === 'FAILED') break;
+        }
+        await new Promise(function (res) {
+          setTimeout(res, 500);
+        });
+      }
+      if (out.mode === 'ask') {
+        var a = await util.ask(o.kind || 'see', o.prompt || '这张图上写着什么？', {
+          refFileIds: [fileId],
+          modelType: o.modelType || 'default',
+        });
+        out.text = (a && a.text) || '';
+      }
+      out.ms = Date.now() - t0;
+      return out;
+    } catch (e) {
+      out.ok = false;
+      out.err = String((e && e.message) || e);
+      out.ms = Date.now() - t0;
+      return out;
+    }
   };
 
   // 验收用：模拟"一轮说完了"（真的完成一轮要能解析出助手回复，脚本没法轻易造）

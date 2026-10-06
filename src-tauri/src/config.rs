@@ -150,6 +150,16 @@ pub struct AppConfig {
     /// "主人居然在看……"这种反应，不是一段小作文（后者每 5 分钟花一次额度，不值）。
     #[serde(default = "default_screen_say")]
     pub screen_say_mode: String,
+    /// **让她"亲眼看"一眼**（多模态）：把缩过的截图交给模型，换回"在做什么 + 重点在哪"。
+    ///
+    /// 【为什么要和 `screen_watch` 分开】`screen_watch` 是本地 OCR —— 零成本、一秒出结果，
+    /// 但它只吐字，**不知道主人在看哪一块**（截图里没有鼠标指针，它没有任何线索）。
+    /// 这一条是花钱那条：一次约 200 token，换来"焦点在哪"和一个能读懂上下文的眼睛。
+    ///
+    /// 所以两者是"门铃和眼睛"的关系：OCR 负责发现"屏幕变了"，变了才值得让她看一眼。
+    /// 默认关 —— 它是这个项目里唯一会**持续**产生费用的开关。
+    #[serde(default)]
+    pub screen_see: bool,
     /// 虚拟身体层（困倦/体力/饿/心跳）注入进【状态】块
     #[serde(default = "default_true")]
     pub body_enabled: bool,
@@ -345,6 +355,7 @@ impl Default for AppConfig {
             screen_every_minutes: default_screen_every(),
             screen_chars: default_screen_chars(),
             screen_say_mode: default_screen_say(),
+            screen_see: false,
             body_enabled: true,
             user_state_enabled: true,
             self_review_mode: default_review_mode(),
@@ -662,6 +673,8 @@ mod tests {
         assert_eq!(d.screen_chars, 240);
         // 看见了就顺口说一句（主人点名要的），本地拼、不花额度
         assert_eq!(d.screen_say_mode, "local");
+        // ★"让她亲眼看"是唯一会持续花钱的开关，必须默认关★（本地 OCR 才是默认那条路）
+        assert!(!d.screen_see, "screen_see 默认必须关（一次约 200 token）");
     }
 
     /// 端到端：一份坏 config.json 必须被隔离成 `.bad-*`，而不是被下一次保存悄悄覆盖。
