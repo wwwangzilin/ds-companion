@@ -430,6 +430,8 @@
     // 立绘姿态跟着状态走 —— 放最前面：HUD 关掉时立绘照样得会呼吸
     paintAvatarPose();
     paintAvatarVariant();
+    // 活动标签放哪儿取决于"立绘在不在、HUD 开没开"，所以每次 HUD 重绘都让它重新落位
+    paintActivity();
     var el = document.getElementById('dsc-hud');
     if (!el) return;
     var s = CFG.state || {};
@@ -522,6 +524,224 @@
     } catch (e) {
       log('hud-failed ' + e);
     }
+  }
+
+  // ─────────────────── 她自己正在做的事（活动） ───────────────────
+  //
+  // 【为什么挑选用页面做】判定要跟着**本地小时**走（`[夜]`/`[早]` 这类标签），而壳的
+  // `std` 只有 UTC —— 这项目的老规矩是"本地时间一律问页面"。挑好之后两件事：
+  //   ① 立刻显示（有立绘就贴立绘右边，没有就塞进 HUD）
+  //   ② 顺手回传给 `dsc_turn_report`，壳存进 state 再注入回【状态】块 ——
+  //      这样她聊着聊着能自然引用（"本小姐刚在翻你冰箱"），而不是每轮从零装失忆。
+  //
+  // 【5 分钟一换】用**确定性伪随机**：种子 = 时间块 + 角色 id + 候选集指纹。
+  // 所以同一段时间里反复算都是同一条 —— 不用存盘、刷新也不漂移；而状态一变
+  // （睡着了、饿了）候选集就变，选出来的自己也跟着换，看着像她真在过日子。
+  var ACTIVITY_BLOCK_MS = 5 * 60 * 1000;
+  /** 此刻她正在做的事（空 = 人设里没配活动池） */
+  var activity = '';
+
+  /** 字符串 → 32 位无符号整数（只用来打散，不需要密码学强度） */
+  function hashStr(s) {
+    var h = 2166136261;
+    for (var i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      // ★必须用 Math.imul★ 普通 `h * 16777619` 的结果会超过 2^53，低位被浮点吃掉 ——
+      // 那正是"哈希看着在跑、分布却是烂的"的来源
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  /**
+   * 32 位雪崩混淆（murmur3 收尾那几手）。
+   *
+   * 【为什么需要它】光用 FNV 的结果直接 `% 候选数`，低位分布很差 —— 实测连续喂
+   * 300 个时间块，4 条候选里有一条**一次都没被选中**，另两条的比例是 239 : 57。
+   * 她要"过日子"，不能一年到头只做那两件事。
+   */
+  function mix32(h) {
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b);
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35);
+    h ^= h >>> 16;
+    return h >>> 0;
+  }
+
+  /**
+   * 一条活动的条件标签跟此刻对不对得上。
+   *
+   * 【多个标签是「与」】`[困][夜]` = 又困又是夜里。
+   * 【不认识的标签一律放行】写错一个字（把 `[困]` 写成 `[睏]`）不该让那条活动
+   * **永远不再出现** —— 那是最难发现的一种坏：没有报错，只是它再也没露过面。
+   */
+  function activityFits(tags) {
+    var b = (CFG.state && CFG.state.body) || {};
+    var h = new Date().getHours();
+    for (var i = 0; i < tags.length; i++) {
+      var t = tags[i];
+      if (t === '睡') {
+        if (!b.asleep) return false;
+      } else if (t === '困') {
+        if (!b.asleep && !((b.sleepiness || 0) >= 0.6)) return false;
+      } else if (t === '饿') {
+        if ((b.hunger || 0) < 0.6) return false;
+      } else if (t === '累') {
+        if ((b.stamina === undefined ? 1 : b.stamina) > 0.4) return false;
+      } else if (t === '夜') {
+        if (!(h >= 23 || h < 5)) return false;
+      } else if (t === '早') {
+        if (!(h >= 5 && h < 11)) return false;
+      } else if (t === '午') {
+        if (!(h >= 11 && h < 14)) return false;
+      } else if (t === '晚') {
+        if (!(h >= 18 && h < 23)) return false;
+      }
+    }
+    return true;
+  }
+
+  /** 拆出开头的 `[标签]`（可以连着好几个），返回 `[纯文本, 标签数组]`。 */
+  function splitActivityTags(raw) {
+    var tags = [];
+    var text = raw;
+    for (;;) {
+      var m = /^\[([^\]\s]{1,6})\]\s*/.exec(text);
+      if (!m) break;
+      tags.push(m[1]);
+      text = text.slice(m[0].length);
+    }
+    return [text.trim(), tags];
+  }
+
+  /**
+   * 在**指定的时间块**上挑一条（挑不出来给空串）。
+   *
+   * 【为什么把 block 拆成参数】验收要验"换个时间块就换一条"，总不能真等 5 分钟 ——
+   * 拆出来之后脚本能直接喂一百个块，看它是不是真的在池子里散开、又是不是稳定可复现。
+   */
+  function pickActivityAt(block) {
+    var pool = CFG.activities || '';
+    if (!pool.trim()) return '';
+    var lines = pool.split('\n');
+    var cands = [];
+    for (var i = 0; i < lines.length; i++) {
+      var raw = lines[i].trim();
+      // `#` 开头是注释行 —— 活动池会长，总得让人能分段、能临时屏蔽几条
+      if (!raw || raw.charAt(0) === '#') continue;
+      var parts = splitActivityTags(raw);
+      if (!parts[0]) continue;
+      if (activityFits(parts[1])) cands.push(parts[0]);
+    }
+    if (!cands.length) return '';
+    // 种子里带**候选集本体的指纹**：状态一变候选就变，选出来的一般也跟着变 ——
+    // 这就是"她真的在过日子"的来源；而同样的状态里它仍然稳定，不会每 15 秒跳一次。
+    // 末尾必须过一遍 mix32：直接拿 FNV 的低位取模会严重偏斜（见 mix32 的注释）。
+    var seed = mix32((block | 0) ^ hashStr((CFG.personaId || '') + '|' + cands.join('|')));
+    return cands[seed % cands.length];
+  }
+
+  /** 此刻该显示哪条。 */
+  function pickActivity() {
+    return pickActivityAt(Math.floor(Date.now() / ACTIVITY_BLOCK_MS));
+  }
+
+  function mountActivity() {
+    if (document.getElementById('dsc-activity')) return;
+    try {
+      var el = document.createElement('div');
+      el.id = 'dsc-activity';
+      el.style.display = 'none';
+      document.body.appendChild(el);
+      paintActivity();
+    } catch (e) {
+      log('activity-failed ' + e);
+    }
+  }
+
+  /**
+   * 放到哪：**有立绘就贴立绘右边，没有就塞进 HUD**（主人定的）。
+   *
+   * 【为什么要分流】"她正在干嘛"这件事更该挨着她本人 —— 立绘在左下角；而立绘关掉、
+   * 或者那个角色还没传图时，HUD（右下角）就是唯一的落脚点。返回用的是不是立绘位。
+   */
+  function placeActivity(el) {
+    var hud = document.getElementById('dsc-hud');
+    var av = document.getElementById('dsc-avatar');
+    var avOn = !!(av && CFG.avatarEnabled !== false && av.offsetWidth > 0);
+    if (avOn) {
+      if (el.parentNode !== document.body) document.body.appendChild(el);
+      var r = av.getBoundingClientRect();
+      el.style.cssText = [
+        'position:fixed',
+        'left:' + Math.round(r.right + 10) + 'px',
+        'bottom:' + Math.round(Math.max(12, innerHeight - r.bottom + 16)) + 'px',
+        'z-index:2147483644',
+        // ★跟立绘同一个道理：它绝不能吃掉主人的点击★
+        'pointer-events:none',
+        'max-width:min(46vw, 210px)',
+        'padding:6px 10px',
+        'border-radius:11px',
+        'font:500 11.5px/1.5 "HarmonyOS Sans SC","Microsoft YaHei",sans-serif',
+        'color:#ded2ff',
+        'background:rgba(24,17,42,.72)',
+        'border:1px solid rgba(167,139,250,.3)',
+        'box-shadow:0 6px 20px rgba(60,36,120,.3)',
+        'backdrop-filter:blur(10px)',
+        '-webkit-backdrop-filter:blur(10px)',
+        'transition:opacity .4s ease',
+        'white-space:pre-wrap',
+      ].join(';');
+    } else if (hud) {
+      if (el.parentNode !== hud) hud.appendChild(el);
+      // 塞进 HUD 当一行：位置交给 HUD 自己排，别再 fixed
+      el.style.cssText = [
+        'position:static',
+        'margin-top:2px',
+        'font-size:10.5px',
+        'color:#9d92c9',
+        'letter-spacing:.01em',
+      ].join(';');
+    }
+    return avOn;
+  }
+
+  function paintActivity() {
+    var el = document.getElementById('dsc-activity');
+    if (!el) return;
+    // 状态层关着就别显示：她连"是谁"都还没确定的时候，不该有一句"她正在干嘛"。
+    // （立绘开不开不影响这一条 —— 立绘只是"放哪儿"的一个分支）
+    if (!activity || CFG.stateEnabled === false) {
+      el.style.display = 'none';
+      return;
+    }
+    if (el.textContent !== activity) el.textContent = activity;
+    // ★placeActivity 会整体重写 cssText（把 display 一并冲掉），所以 display 必须
+    //   在它之后设★ —— 顺序反了就会"算出来有活动、屏幕上却什么都没有"。
+    var avOn = placeActivity(el);
+    var hudOn = !!(CFG.hudEnabled && CFG.state && CFG.state.turns);
+    el.style.display = avOn || hudOn ? 'block' : 'none';
+  }
+
+  /**
+   * 15 秒看一眼。
+   *
+   * 【★ 换没换都要重绘 ★】标签的位置取决于"立绘在不在、HUD 开没开"，而这两样都是
+   * **异步**变的（立绘的图是后加载的、开关随时会被拨）。原来这里写的是"活动没变就
+   * 直接 return"，于是位置永远停在第一次算出来的那一版 —— 验收实测到的就是
+   * "立绘明明开着，活动却挂在 HUD 位、而且看不见"。
+   */
+  function tickActivity() {
+    var next = pickActivity();
+    if (next !== activity) {
+      var had = !!activity;
+      activity = next;
+      if (activity && !had) log('activity 有了：' + activity);
+      else if (activity) log('activity → ' + activity);
+      else if (had) log('activity 清空了（活动池没配，或者这一档没有可用的）');
+    }
+    paintActivity();
   }
 
   // ─────────────────────── 对话留档 ───────────────────────
@@ -633,6 +853,9 @@
       ooc: oocTurn(userText),
       // 本地日期一并报上去：Rust 只有 UTC，按天聚合的长期曲线要靠它（见 fold_daily）
       day: localDay(),
+      // 她此刻正在做的事（页面按本地时间挑的）→ 壳存进 state、再注入回【状态】块。
+      // 空串**不会**清掉壳里那条（见 dsc_turn_report 里的说明）
+      activity: activity,
     })
       .then(function (r) {
         if (!r || !r.ok) return;
@@ -1589,6 +1812,11 @@
         if (img.naturalWidth && img.naturalHeight) {
           AVATAR.ratio = img.naturalWidth / img.naturalHeight;
         }
+        // ★立绘是异步出来的，它出来了活动标签才挪得过去★
+        // 不在这儿重排的话，标签会一直停在"挂载那一刻"算出的位置（那时立绘还是 0 宽），
+        // 非得等到下一个 15 秒节拍才纠正 —— 用户看到的就是"标签在 HUD 那边杵着，
+        // 十几秒后突然跳到立绘旁边"。
+        paintActivity();
       });
       box.appendChild(img);
       document.body.appendChild(box);
@@ -2070,6 +2298,8 @@
             // 拿返回值**就地生效** —— 不用等下一次配置推送（那要等下一轮对话）
             CFG.avatarEnabled = !!on;
             paintAvatar();
+            // 立绘一收，活动标签就得搬回 HUD（或反过来）—— 立刻重排，别等下一个 15 秒
+            paintActivity();
             log('avatar-toggle → ' + (on ? '显示' : '隐藏'));
           })
           .catch(function (err) {
@@ -2213,6 +2443,13 @@
     paintBadge();
     paintHud();
     paintAvatar();
+    // 活动池大概率整个换了（切角色）—— 先清空再重算，等于强制刷新；
+    // 不清的话会把上一个角色的活动安到新角色头上，一眼就串味。
+    // 末尾再补一次 paintActivity：新结果也是空串时 tickActivity 会直接 return，
+    // 那就需要这一下把旧的显示收掉。
+    activity = '';
+    tickActivity();
+    paintActivity();
     log('config-updated cadence=' + CFG.cadence + ' persona=' + (CFG.personaName || 'none'));
   };
 
@@ -2331,6 +2568,71 @@
       pose: box ? box.style.transform : '',
     };
   };
+
+  /** 她正在做的事的现状（验收断言用）。 */
+  window.__DSC_ACTIVITY__ = function () {
+    var el = document.getElementById('dsc-activity');
+    var hud = document.getElementById('dsc-hud');
+    var av = document.getElementById('dsc-avatar');
+    var r = el ? el.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+    var ar = av ? av.getBoundingClientRect() : null;
+    return {
+      text: activity,
+      /** 落在哪儿：avatar = 贴立绘右边 / hud = 塞进 HUD / none = 还没落位 */
+      where: !el || !el.parentNode
+        ? 'none'
+        : el.parentNode === hud
+          ? 'hud'
+          : el.parentNode === document.body
+            ? 'avatar'
+            : 'other',
+      /** 真看得见才算数（DOM 里挂着个 div ≠ 画出来了） */
+      shown: !!(el && el.offsetWidth > 0),
+      display: el ? el.style.display : '',
+      block: Math.floor(Date.now() / ACTIVITY_BLOCK_MS),
+      /** 活动池里非空、非注释的行数 */
+      pool: (CFG.activities || '')
+        .split('\n')
+        .filter(function (l) {
+          var t = l.trim();
+          return t && t.charAt(0) !== '#';
+        }).length,
+      left: Math.round(r.left),
+      top: Math.round(r.top),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      avatarRight: ar ? Math.round(ar.right) : 0,
+      avatarOn: !!(av && CFG.avatarEnabled !== false && av.offsetWidth > 0),
+      pointerEvents: el ? getComputedStyle(el).pointerEvents : '',
+      /** 壳里存着的那条（回传落到 CFG.state 了没） */
+      stateActivity: (CFG.state && CFG.state.activity) || '',
+    };
+  };
+  /** 验收用：喂一个时间块，看那个块会挑出哪条（**不改变**当前显示）。 */
+  window.__DSC_ACTIVITY_AT__ = function (block) {
+    return pickActivityAt(Number(block) || 0);
+  };
+  /** 验收用：立刻按现在重算一次（不用干等 15 秒的节拍）。 */
+  window.__DSC_ACTIVITY_TICK__ = function () {
+    tickActivity();
+    return activity;
+  };
+  /** 验收用：强制重绘一次 —— 用来验"立绘开关一拨，活动标签就换地方"。 */
+  window.__DSC_ACTIVITY_REPAINT__ = function () {
+    paintActivity();
+    return true;
+  };
+  /** 验收用：几个标签在此刻成不成立（验条件标签用）。 */
+  window.__DSC_ACTIVITY_FITS__ = function (tags) {
+    return activityFits(
+      String(tags || '')
+        .split(',')
+        .map(function (s) {
+          return s.trim();
+        })
+        .filter(Boolean),
+    );
+  };
   // 验收用：就地把姿态/呼吸/表情重算一次（状态是脚本临时改的，不等下一次推送）
   window.__DSC_AVATAR_REPOSE__ = function () {
     paintAvatarPose();
@@ -2364,6 +2666,7 @@
     mountAvatar();
     mountSync();
     mountAvatarEye();
+    mountActivity();
     if (mounted) return;
     mounted = true;
     // 空闲判定：任何交互都算"主人在"
@@ -2376,6 +2679,10 @@
     });
     window.addEventListener('focus', markActivity, true);
     setInterval(checkIdle, 30000);
+    // 她自己正在做的事：5 分钟才换一条，但**检查要勤一些** —— 状态一变（睡着了、
+    // 饿了）候选集就变了，不能等她睡醒了还在显示"在打游戏"
+    setInterval(tickActivity, 15000);
+    tickActivity();
     // 安静时段的判定在壳里（它才拿着 hour）—— 这里只把它写进日志：
     // 她不说的时候，一眼要能看出是「到了安静时段」而不是「链路坏了」
     log(

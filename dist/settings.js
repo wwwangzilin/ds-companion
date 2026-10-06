@@ -301,6 +301,8 @@ function openEditor(id) {
   $('f-desc').value = p.description || '';
   $('f-address').value = p.address || '';
   $('f-body').value = p.body || '';
+  // 活动池是**多行**的（一行一件事）—— 原样灌进去，别动行首的 [标签]
+  $('f-activities').value = p.activities || '';
   $('editor-title').textContent = p.name;
   $('editor-meta').textContent = `${p.id} · 来源 ${p.source || 'manual'}`;
   $('btn-save').disabled = false;
@@ -310,11 +312,12 @@ function openEditor(id) {
 }
 
 function newPersona() {
-  current = { id: '', name: '', description: '', source: 'manual', body: '', address: '' };
+  current = { id: '', name: '', description: '', source: 'manual', body: '', address: '', activities: '' };
   $('f-name').value = '';
   $('f-desc').value = '';
   $('f-address').value = '';
   $('f-body').value = '';
+  $('f-activities').value = '';
   $('editor-title').textContent = '新建人设';
   $('editor-meta').textContent = '填好名字与正文后保存';
   $('btn-save').disabled = false;
@@ -343,6 +346,9 @@ async function saveCurrent() {
     address: $('f-address').value.trim(),
     source: (current && current.source) || 'manual',
     body: $('f-body').value,
+    // ★必须一起交给壳★ personas.rs 的存盘清单是**手写**的（不是 serde 自动的），
+    // 漏一个字段就是"界面上填得进去、存下去就没了"，而且一声不响 —— address 丢过一次。
+    activities: $('f-activities').value,
   };
   try {
     const saved = await invoke('persona_save', { persona: payload });

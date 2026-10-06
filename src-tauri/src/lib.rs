@@ -464,6 +464,8 @@ fn dsc_turn_report(
     hour: u32,
     day: Option<String>,
     ooc: Option<bool>,
+    // 她此刻正在做的事（页面按本地时间挑好的）。空 = 这轮没挑 / 没配活动池。
+    activity: Option<String>,
 ) -> TurnReport {
     let cfg = config::load();
     let character = personas::active_character_id(cfg.active_persona.as_deref());
@@ -512,6 +514,12 @@ fn dsc_turn_report(
     // 两份必然走散（state.rs 那边加了"在吗""露娜"这类呼唤，这边根本不认）
     let intimate = sig.intimate;
     state::apply_turn(&mut st, &sig, intimate, now, task_mode);
+    // 她正在做的事（页面按本地时间挑的）。**只在真的挑到时才更新** ——
+    // 空串不清空：否则某一轮没挑到（或页面刚起来还没挑）就会把她手上那件事抹掉，
+    // 看起来像"她突然什么都不干了"。
+    if let Some(a) = activity.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+        st.activity = state::clip_chars(a, 40);
+    }
     state::apply_body_turn(&mut st.body, &sig, st.arousal, now);
     // 并进"按天那一行"（长期曲线的数据来源）。日期是页面报的，见上面的参数说明。
     state::fold_daily(&mut st, day.as_deref());

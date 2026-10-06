@@ -16,11 +16,12 @@ use crate::personas;
 /// 内置角色 id。config.persona_id 为 None（= 用内置人设）时，页面用的就是它。
 pub const BUILTIN_ID: &str = "dsh-deepseek";
 
-/// 内置立绘差分表 —— 由 build.rs 扫描 `assets/avatars/deepseek-*.png` 生成。
-///
-/// 美术素材取自 gal-view 仓库的默认预设场景（MIT，Copyright (c) 2026 Yunicon）：
-/// 原始那张是 `DeepSeek娘_立绘.png`（1024×1536），现在的差分是 1280×1920 的重绘版，
-/// 按表情拆开命名。
+// 内置立绘差分表 —— 由 build.rs 扫描 `assets/avatars/deepseek-*.png` 生成。
+//
+// 【为什么不能用 `///`】`include!` 是宏、不是 item，前面挂文档注释 Rust 会报
+// "unused doc comment"。素材来源：gal-view 仓库的默认预设场景（MIT，
+// Copyright (c) 2026 Yunicon）；原始那张是 `DeepSeek娘_立绘.png`（1024×1536），
+// 现在的差分是 1280×1920 的重绘版，按表情拆开命名。
 include!(concat!(env!("OUT_DIR"), "/avatar_assets.rs"));
 
 /// 表情差分的变体名。

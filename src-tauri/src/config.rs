@@ -307,6 +307,12 @@ pub struct InjectPayload {
     pub persona_id: Option<String>,
     pub persona_name: Option<String>,
     pub persona_text: String,
+    /// **她自己会做的事**（活动池原文，一行一件，可带 `[困]` 这类条件标签）。
+    ///
+    /// 页面按本地时间 + 状态挑一条 → 显示在立绘旁/HUD → 顺手回传给
+    /// `dsc_turn_report` → 壳存进 `state.activity` 再注入回【状态】块。
+    /// 当前那条不用单独给：`state` 里已经有整个 `CharState`。
+    pub activities: String,
     pub memory_enabled: bool,
     pub memory_budget: u32,
     /// 页面自己数「攒了几轮还没整理」，攒够这个数就自动整理（0 = 关）
@@ -426,6 +432,10 @@ pub fn inject_payload() -> InjectPayload {
         persona_id: persona.as_ref().map(|p| p.id.clone()),
         persona_name: persona.as_ref().map(|p| p.name.clone()),
         persona_text: persona.as_ref().map(|p| p.body.clone()).unwrap_or_default(),
+        activities: persona
+            .as_ref()
+            .map(|p| p.activities.clone())
+            .unwrap_or_default(),
         memory_enabled: cfg.memory_enabled,
         memory_budget: cfg.memory_budget,
         extract_every_turns: cfg.extract_every_turns,

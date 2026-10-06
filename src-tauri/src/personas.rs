@@ -39,6 +39,19 @@ pub struct Persona {
     /// 注意它**不是** `call_names` 那个东西 —— 那个答的是"怎么叫她"。
     #[serde(default)]
     pub address: String,
+    /// **她自己会做的事** —— 空闲时"正在干什么"的活动池，一行一件。
+    ///
+    /// 【为什么挂在人设上，不写死在代码里】活动就是人设的一部分：露娜会去拆耳机线、
+    /// 娘会去折腾代码，同一份活动表套在两个角色身上会立刻串味。
+    ///
+    /// 【行内标签】每行可以带可选的 `[困]` `[饿]` `[累]` `[夜]` `[早]` 前缀当条件，
+    /// 不带标签的行任何时候都能被选中。
+    ///
+    /// 【为什么挑选用页面做】判定要跟着**本地小时**走（夜/早），而壳的 `std` 只有 UTC
+    /// —— 这项目的老规矩是"日期与本地时间一律问页面"。所以壳只负责存下来 + 注入进
+    /// 状态块，挑法在 `inject.js` 的 `pickActivity`。
+    #[serde(default)]
+    pub activities: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -347,6 +360,7 @@ fn parse_persona_md(text: &str) -> Option<Persona> {
     let mut description = String::new();
     let mut source = String::new();
     let mut address = String::new();
+    let mut activities = String::new();
     for line in lines.by_ref() {
         if line.trim() == "---" {
             break;
@@ -359,6 +373,10 @@ fn parse_persona_md(text: &str) -> Option<Persona> {
                 "description" => description = v,
                 "source" => source = v,
                 "address" => address = v,
+                // 活动池是**多行**的，而 frontmatter 一行一个键 —— 写入时把换行转义成
+                // 字面量 `\n`（见 render_persona_md），这里再还原。不这么做的话多行值
+                // 会把 frontmatter 撑破，后面几行全变成"未知键"静默丢掉。
+                "activities" => activities = v.replace("\\n", "\n"),
                 _ => {}
             }
         }
@@ -369,6 +387,7 @@ fn parse_persona_md(text: &str) -> Option<Persona> {
     }
     Some(Persona {
         address,
+        activities,
         id,
         name: if name.is_empty() { "未命名".into() } else { name },
         description,
@@ -385,8 +404,16 @@ fn parse_persona_md(text: &str) -> Option<Persona> {
 /// 一路查到这儿才发现。所以下面那条 `frontmatter_keeps_every_field` 用**非空值**挨个比对。
 fn render_persona_md(p: &Persona) -> String {
     format!(
-        "---\nid: {}\nname: {}\ndescription: {}\nsource: {}\naddress: {}\n---\n{}\n",
-        p.id, p.name, p.description, p.source, p.address, p.body
+        "---\nid: {}\nname: {}\ndescription: {}\nsource: {}\naddress: {}\nactivities: {}\n---\n{}\n",
+        p.id,
+        p.name,
+        p.description,
+        p.source,
+        p.address,
+        // 多行压成一行（还原见 parse_persona_md）；顺手把 CRLF 的 \r 吃掉，
+        // 免得 Windows 上编辑过的文件写出 `\r\n` 两个字符的转义串
+        p.activities.replace('\r', "").replace('\n', "\\n"),
+        p.body
     )
 }
 
@@ -417,6 +444,9 @@ pub fn builtin_persona() -> Persona {
     }
     parse_persona_md(BUILTIN_MD).unwrap_or_else(|| Persona {
         address: String::new(),
+        // 走到这个分支说明连内置 md 都解析失败了（几乎不可能）。活动池留空，
+        // 页面那边就自然不显示那一行 —— 不拿半截数据硬编。
+        activities: String::new(),
         id: BUILTIN_ID.into(),
         name: "DeepSeek 娘".into(),
         description: String::new(),
@@ -563,6 +593,9 @@ pub fn save_persona(persona: &Persona) -> Result<Persona, String> {
         // "界面上填得进去、存下去就没了"。而批量补字段的脚本补出来的正是空串 ——
         // 它只保证"字段在"（编译过），不保证值对。验收脚本抓到的就是这一处。
         address: persona.address.trim().to_string(),
+        // 【同 address 那条】必须**透传主人的输入**，写成空串就等于
+        // "界面上填得进去、存下去就没了" —— 而且一声不响。
+        activities: persona.activities.trim().to_string(),
         id: id.clone(),
         name: persona.name.trim().to_string(),
         description: persona.description.trim().to_string(),
@@ -729,6 +762,9 @@ pub fn import_dsh_preset(preset_id: &str) -> Result<Persona, String> {
     let body = extract_persona_prefix(&cordis).ok_or_else(|| "这个人设行没有 prefix".to_string())?;
     let persona = Persona {
         address: String::new(),
+        // 从 DSH preset 导入的人设没有活动池 —— 那是这个软件自己的概念，
+        // 导入后在设置界面里补。
+        activities: String::new(),
         id: format!("dsh-{}", safe_id(&preset.id)),
         name: preset.name.clone(),
         description: preset.description.clone(),
@@ -764,12 +800,24 @@ mod tests {
             description: "小恶魔".into(),
             source: "manual".into(),
             address: "主人".into(),
+            // ★故意给**多行**值★：活动池天生就是多行的，而 frontmatter 一行一个键 ——
+            // 用单行值测的话，"多行把 frontmatter 撑破"这个错根本测不出来。
+            activities: "[困] 趴在桌上打盹\n偷吃你冰箱里那盒布丁".into(),
             body: "你是「露娜」，一个……".into(),
         };
         let md = render_persona_md(&p);
         assert!(md.contains("address: 主人"), "frontmatter 里得有 address：\n{md}");
+        // 落盘的必须仍是**一行**：真换行会把后面的键挤成未知行、静默丢掉
+        assert!(
+            md.contains("activities: [困] 趴在桌上打盹\\n偷吃你冰箱里那盒布丁"),
+            "activities 该转义成一行：\n{md}"
+        );
         let back = parse_persona_md(&md).expect("该能读回来");
         assert_eq!(back.address, "主人", "★address 丢了★");
+        assert_eq!(
+            back.activities, "[困] 趴在桌上打盹\n偷吃你冰箱里那盒布丁",
+            "★activities 丢了，或者多行没还原回来★"
+        );
         assert_eq!(back.id, "p-verify");
         assert_eq!(back.name, "露娜");
         assert_eq!(back.description, "小恶魔");
@@ -850,6 +898,7 @@ mod tests {
     fn frontmatter_roundtrip() {
         let p = Persona {
             address: String::new(),
+            activities: String::new(),
             id: "x".into(),
             name: "名字".into(),
             description: "描述".into(),

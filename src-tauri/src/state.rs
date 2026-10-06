@@ -743,6 +743,16 @@ pub struct CharState {
     /// 还没发生完的事（伏笔）—— 到期就问一句，问过就忘
     #[serde(default)]
     pub pending: Vec<Pending>,
+    /// **她此刻正在做的事**（空闲时的活动，由页面挑好回传）。
+    ///
+    /// 【为什么由页面挑】判定要跟着**本地小时**走（`[夜]`/`[早]` 这类标签），而壳的
+    /// `std` 只有 UTC —— 这项目的老规矩是"本地时间一律问页面"。页面每轮把当前活动
+    /// 带回来，壳只负责存下来、注入进【状态】块，这样她聊着聊着能自然引用
+    /// （"本小姐刚在翻你冰箱"），而不是每轮从零开始装失忆。
+    ///
+    /// 空 = 人设里没配活动池，或者还没回传过。
+    #[serde(default)]
+    pub activity: String,
 
     // ── 通路自检的计数器（见 check_vitals）─────────────────────────────
     //
@@ -794,6 +804,7 @@ impl Default for CharState {
             last_diary_day: String::new(),
             scene: Scene::default(),
             pending: Vec::new(),
+            activity: String::new(),
             last_fed_turn: 0,
             flat_turns: 0,
             affinity_stuck_turns: 0,
@@ -1544,6 +1555,11 @@ pub fn render_state_block(
     )];
     if !s.arc.trim().is_empty() {
         lines.push(format!("当前处境：{}", s.arc.trim()));
+    }
+    // 她自己正在做的事（空闲时由页面按本地时间挑好回传）。
+    // **压缩版刻意不带这一行**：干活时那点生活气没用，而这行的意义本来就只在闲下来的时候。
+    if !s.activity.trim().is_empty() {
+        lines.push(format!("正在做的事：{}", clip_chars(s.activity.trim(), 40)));
     }
     let rel = render_milestone_line(s, now);
     if !rel.is_empty() {
