@@ -1672,6 +1672,18 @@ fn dsc_avatar_clear(id: String, variant: Option<String>) -> Result<AvatarView, S
     Ok(avatar_view(&id, avatar::DEFAULT_VARIANT))
 }
 
+/// 立绘总开关（**页面**用）—— 让她在聊天页随手就能关掉自己那张。
+///
+/// 【为什么不干脆给页面 config_set】那是"能改任意配置"的万能钥匙，远程页面不该拿；
+/// 这里只暴露**一个字段**、而且只允许它取布尔值。缺省不传 = 翻转当前值。
+#[tauri::command]
+fn dsc_avatar_toggle(enabled: Option<bool>) -> Result<bool, String> {
+    let mut c = config::load();
+    c.avatar_enabled = enabled.unwrap_or(!c.avatar_enabled);
+    config::save(&c)?;
+    Ok(c.avatar_enabled)
+}
+
 // ─────────────────────── 用对话同步设置 ───────────────────────
 //
 // 打包在壳里（文件都在这儿），发消息在页面里（只有它有登录态）—— 所以这里是
@@ -2374,6 +2386,7 @@ pub fn run() {
             dsc_avatar_get,
             dsc_avatar_set,
             dsc_avatar_clear,
+            dsc_avatar_toggle,
             dsc_sync_pack,
             dsc_sync_apply,
             trash_prune,

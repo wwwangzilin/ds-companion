@@ -134,10 +134,11 @@ fn main() {
             // 设置页翻日记（只读两条）
             "dsc_diary_days",
             "dsc_diary_read",
-            // 立绘：页面只读当前角色的图；传图/清图只有设置窗口能做
+            // 立绘：页面只读当前角色的图 + 一个"随手关掉自己"的开关；传图/清图只有设置窗口能做
             "dsc_avatar_get",
             "dsc_avatar_set",
             "dsc_avatar_clear",
+            "dsc_avatar_toggle",
             // 对话同步：打包与落包都得在页面里发起（只有页面有登录态，
             // 发消息/读对话都得用它）；壳只提供两个纯本地端点。
             "dsc_sync_pack",

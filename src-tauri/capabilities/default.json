@@ -37,6 +37,7 @@
     "allow-dsc-tool-proposal-decide",
     "allow-dsc-diary-save",
     "allow-dsc-avatar-get",
+    "allow-dsc-avatar-toggle",
     "allow-dsc-sync-pack",
     "allow-dsc-sync-apply"
   ]

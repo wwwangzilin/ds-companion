@@ -1854,6 +1854,7 @@
 
   /** 按「开关 + 当前角色 + 素材到手没有」决定显不显示。 */
   function paintAvatar() {
+    paintEye(); // 开关状态跟着一起刷（设置里改了之后图标也要变）
     var box = document.getElementById('dsc-avatar');
     if (!box) return;
     if (!(CFG && CFG.avatarEnabled !== false)) {
@@ -2017,13 +2018,80 @@
     }
   }
 
-  /** 同步按钮贴在角标左边（角标宽度是动态的，所以得真量） */
+  /** 角标左边那一排小按钮：同步 + 立绘开关（角标宽度是动态的，所以得真量） */
   function placeSync() {
-    var btn = document.getElementById('dsc-sync');
     var badge = document.getElementById('dsc-badge');
-    if (!btn) return;
     var w = badge ? badge.getBoundingClientRect().width : 0;
-    btn.style.right = (14 + (w || 96) + 8) + 'px';
+    var right = 14 + (w || 96) + 8;
+    var sync = document.getElementById('dsc-sync');
+    if (sync) {
+      sync.style.right = right + 'px';
+      right += 38; // 按钮 30 + 间距 8
+    }
+    var eye = document.getElementById('dsc-avatar-eye');
+    if (eye) eye.style.right = right + 'px';
+  }
+
+  /**
+   * 立绘开关：她那张图就挂在页面上，想关掉不该还得翻开设置翻到「状态」页。
+   *
+   * 【为什么单独走一条命令】页面没有 `config_set` 权限 —— 那是"能改任意配置"的
+   * 万能钥匙，远程页面不该拿；这里只允许它动**一个布尔字段**（dsc_avatar_toggle）。
+   */
+  function mountAvatarEye() {
+    if (document.getElementById('dsc-avatar-eye')) return;
+    try {
+      var el = document.createElement('div');
+      el.id = 'dsc-avatar-eye';
+      el.style.cssText = [
+        'position:fixed',
+        'bottom:14px',
+        'right:168px',
+        'z-index:2147483647',
+        'width:30px',
+        'height:30px',
+        'border-radius:999px',
+        'cursor:pointer',
+        'user-select:none',
+        'text-align:center',
+        'font:600 14px/28px "HarmonyOS Sans SC","Microsoft YaHei",sans-serif',
+        'color:#e9dcff',
+        'background:rgba(28,20,48,.72)',
+        'border:1px solid rgba(178,140,255,.45)',
+        'box-shadow:0 6px 24px rgba(120,80,220,.35)',
+        'backdrop-filter:blur(10px)',
+        '-webkit-backdrop-filter:blur(10px)',
+      ].join(';');
+      el.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var want = !(CFG && CFG.avatarEnabled !== false);
+        invoke('dsc_avatar_toggle', { enabled: want })
+          .then(function (on) {
+            // 拿返回值**就地生效** —— 不用等下一次配置推送（那要等下一轮对话）
+            CFG.avatarEnabled = !!on;
+            paintAvatar();
+            log('avatar-toggle → ' + (on ? '显示' : '隐藏'));
+          })
+          .catch(function (err) {
+            log('avatar-toggle-failed ' + err);
+          });
+      });
+      document.body.appendChild(el);
+      paintEye();
+      placeSync();
+    } catch (e) {
+      log('avatar-eye-failed ' + e);
+    }
+  }
+
+  /** 眼睛图标反映当前状态：实心 = 显示中，空心 = 已隐藏。 */
+  function paintEye() {
+    var el = document.getElementById('dsc-avatar-eye');
+    if (!el) return;
+    var on = !(CFG && CFG.avatarEnabled === false);
+    el.textContent = on ? '\u25C9' : '\u25CB';
+    el.title = on ? '立绘：显示中（点一下关掉）' : '立绘：已隐藏（点一下打开）';
+    el.style.opacity = on ? '1' : '0.6';
   }
 
   /** 导出：打包 → 建一个**空对话** → 把包发进去 */
@@ -2295,6 +2363,7 @@
     mountSay();
     mountAvatar();
     mountSync();
+    mountAvatarEye();
     if (mounted) return;
     mounted = true;
     // 空闲判定：任何交互都算"主人在"

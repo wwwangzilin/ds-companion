@@ -1,4 +1,4 @@
-﻿/* 立绘层端到端验收：内置 DeepSeek 娘 + 自建角色上传自己的图。
+/* 立绘层端到端验收：内置 DeepSeek 娘 + 自建角色上传自己的图。
  *
  * 【为什么这几条必须真跑起来验】立绘是"壳与页面两边凑出来的一张图"：
  *   ① 素材在**壳**里（内置的编进 exe，上传的落在数据目录），页面只有一次 IPC 拿到它；
@@ -537,6 +537,45 @@ check(
     vSleep.usedVariant === 'sleepy' &&
     vShy.usedVariant === 'shy',
   `angry=${vAngry.usedVariant} smug=${vSmug.usedVariant} sleepy=${vSleep.usedVariant} shy=${vShy.usedVariant}`,
+);
+
+// ── 页面上的立绘开关（不用翻设置翻到「状态」页） ──────────────────────
+const eye = JSON.parse(
+  await evalIn(
+    main,
+    `(() => { const el = document.getElementById('dsc-avatar-eye');
+       return JSON.stringify({ mounted: !!el, text: el ? el.textContent : '', title: el ? el.title : '' }); })()`,
+  ),
+);
+check('页面上有立绘开关（眼睛图标）', eye.mounted === true, JSON.stringify(eye));
+check('图标显示的是"显示中"（实心）', eye.text === '◉', `${eye.text} / ${eye.title}`);
+
+// 真点一下 → 立绘收起，**并且配置真的落盘**（不只是页面状态变了）
+await evalIn(main, `(() => { document.getElementById('dsc-avatar-eye').click(); return true; })()`);
+await sleep(1000);
+const offState = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+const cfgOff = await evalIn(
+  main,
+  `window.__TAURI_INTERNALS__.invoke('dsc_get_config').then(c => String(c.avatarEnabled))`,
+);
+check(
+  '★ 点一下 → 立绘收起，且配置真的落盘了',
+  offState.opacity === '0' && cfgOff === 'false',
+  `opacity=${offState.opacity} cfg.avatarEnabled=${cfgOff}`,
+);
+
+// 再点回来 → 立绘与配置都回来
+await evalIn(main, `(() => { document.getElementById('dsc-avatar-eye').click(); return true; })()`);
+await sleep(1000);
+const onState = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
+const cfgOn = await evalIn(
+  main,
+  `window.__TAURI_INTERNALS__.invoke('dsc_get_config').then(c => String(c.avatarEnabled))`,
+);
+check(
+  '★ 再点一下 → 回来（配置也回来了）',
+  onState.opacity === '1' && cfgOn === 'true',
+  `opacity=${onState.opacity} cfg.avatarEnabled=${cfgOn}`,
 );
 
 // ── 截图（给主人肉眼看的） ────────────────────────────────────────
