@@ -16,7 +16,10 @@
   var CFG = window.__DSC_BOOT_CONFIG__ || { cadence: 'off', personaText: '' };
   var COMPLETION_PATH = '/api/v0/chat/completion';
   var MARK_HEAD = '【人设】';
-  var MARK_TAIL = '【以上是人设。以下是主人本次的输入】';
+  // 【这句话得跟着拼法一起改】注入块原先拼在主人输入**前面**，所以那时它写的是
+  // "以下是主人本次的输入"；现在顺序反过来（见 applyInject），这句也得指对方向 ——
+  // 顺便告诉模型"最上面那句才是他说的"，免得它把背景当问题。
+  var MARK_TAIL = '【以上是人设。主人这次说的话在最上面】';
   var stats = { seen: 0, injected: 0, skipped: 0, viaXhr: 0, viaFetch: 0, urls: [], errors: 0 };
   var BOOT_AT = Date.now();
 
@@ -154,7 +157,9 @@
     if (!block) return { ok: false, why: 'no-persona-text' };
     var isFirst = body.parent_message_id === null || body.parent_message_id === undefined;
     if (CFG.cadence === 'first' && !isFirst) return { ok: false, why: 'not-first-message' };
-    if (body.prompt.indexOf(MARK_HEAD) === 0) return { ok: false, why: 'already-injected' };
+    // 【为什么是"包含"不是"开头"】注入块现在拼在主人那句话**后面**（见 applyInject
+    // 里那段说明）—— 再用 `=== 0` 判去重就永远判不出来，会重复注入。
+    if (body.prompt.indexOf(MARK_HEAD) >= 0) return { ok: false, why: 'already-injected' };
     return { ok: true, block: block, first: isFirst };
   }
 
@@ -334,7 +339,21 @@
     publishReceipt(true, d.ok ? '' : d.why, blocks, prefix.length, via, d.first);
 
     var before = body.prompt.length;
-    body.prompt = prefix + body.prompt;
+    // 【为什么注入块拼在主人那句话**后面**（原来是在前面）】
+    //
+    // 上游对长的用户消息有个折叠：`div.ds-collapsible-text { max-height: 192px }` ——
+    // 只露第一屏。注入块排在前面时，**折叠露出来的全是【人设】【状态】那些块**，
+    // 主人自己打的那句话被压在 1000 多字之后（F5 之后看到的就是这个，原话
+    // "刷新之后对话的内容就展开带系统提示词的了"）。挪到后面之后，折叠态显示的就是
+    // **他真正说的那句话** —— 这才是他要的"只显示发的东西"。
+    //
+    // 【代价】对模型来说变成"问题在前、背景在后"。实测验收（verify-inject-order.mjs）
+    // 盯的就是她的人设还跟不跟得住。
+    //
+    // 【为什么不能靠改 DOM 藏起来】实测整条消息的正文是**一个 span 的纯文本**
+    // （`pCount:0`、`brCount:0`，注入块和主人的话之间没有元素边界）—— 要在显示层
+    // 只藏注入块，就只能改写文本，那会污染复制和"重新编辑发送"。所以从源头改顺序。
+    body.prompt = body.prompt + '\n\n' + prefix;
     if (d.ok) stats.injected++;
     log(
       'INJECTED(' +
@@ -3122,6 +3141,209 @@
       out.ms = Date.now() - t0;
       return out;
     }
+  };
+
+  // ═══════════════════ 侧栏：把"我们自己开的"会话折叠掉 ═══════════════════
+  //
+  // 记忆整理 / 看图 / 意图判断 / 活动 / 设置同步 各自开了一条**隐藏会话**
+  // （见 deepseek-client.js 的 KINDS）。它们会出现在侧栏里，而且标题是上游拿第一句
+  // prompt 自动起的 —— 看着完全像正常对话，实测是这样的：
+  //     cdec2223…（看图）→ "屏幕验证目标查看"
+  //     bf013857…（活动）→ "空闲时写活动"
+  //     dde7944e…（记忆）→ "露娜早晨问候"
+  //     1891992a…（判断）→ "情绪感知判断"
+  //     d34344a4…（同步）→ "DS备份解析"
+  // 又刷屏又认不出来，所以主人要"折叠起来"。
+  //
+  // 【怎么认出它们】会话 id 就存在 localStorage 的 `dsc-*-session` 里，而侧栏项是
+  // `a[href*="/a/chat/s/"]`、href 里带着 id。**按 id 比对是确定的** —— 靠标题匹配的
+  // 话，改一次 prompt 就失效（那些标题正是 prompt 的第一句）。
+  //
+  // 【为什么只能隐藏、不能搬走】侧栏是 React 渲染的：动它的**节点结构**会被重渲染
+  // 打回去。加一个 class + 一条 CSS 是"最小改动"，重渲染后由观察器补上即可。
+  // 开关行是我们自己插的元素（React 不认它），点一下记进 localStorage。
+  var SYS_FOLD_KEY = 'dsc-fold-sys-sessions';
+
+  /**
+   * 从 localStorage 里抠出所有我们自己开的会话 id。
+   *
+   * 【为什么扫全部 `dsc-*` 而不是只扫 `-session`】会话 id 有两个落点，而且**不一定一致**：
+   *   dsc-see-session = "cdec2223-…"                       ← 裸 id
+   *   dsc-chain-see   = {"sessionId":"cdec2223-…", …}      ← 记账（正在用的那条）
+   * 实测侧栏最前面那几条恰恰是 `dsc-chain-*` 里记的（记忆链 dde7944e、判断链 813d2bdd
+   * 都不在任何 `-session` 值里），只扫 `-session` 会漏掉它们，表现就是"认出了 6 个却只藏了 4 条"。
+   * 所以规则改成：**只要是 `dsc-` 开头的键，值里出现 uuid 就收**（`dsc-fold-sys-sessions`
+   * 的值是 '0'/'1'，自然不会被收进来）。
+   */
+  function sysSessionIds() {
+    var ids = [];
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (!k || k.indexOf('dsc-') !== 0) continue;
+        var v = String(localStorage.getItem(k) || '');
+        var m = v.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+        if (m && ids.indexOf(m[0]) < 0) ids.push(m[0]);
+      }
+    } catch (e) {
+      /* 读不到就算了 —— 折叠是锦上添花，不能因为它把页面搞坏 */
+    }
+    return ids;
+  }
+
+  function sysFoldOn() {
+    try {
+      return localStorage.getItem(SYS_FOLD_KEY) !== '0'; // 默认折叠
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function ensureSysStyle() {
+    if (document.getElementById('dsc-sys-style')) return;
+    // 【head 可能还不存在】本脚本是 initialization_script，在 `document_start` 就跑，
+    // 那一刻 head / documentElement 都可能还是 null —— 直接 appendChild 会抛。
+    var host = document.head || document.documentElement;
+    if (!host) return; // 下次再补，别抛
+    var st = document.createElement('style');
+    st.id = 'dsc-sys-style';
+    st.textContent =
+      'a.dsc-sys-session{display:none !important}' +
+      '#dsc-sys-bar{display:flex;align-items:center;gap:6px;margin:6px 10px;padding:4px 8px;' +
+      'border-radius:8px;font-size:12px;cursor:pointer;user-select:none;' +
+      'color:#8a8f98;background:rgba(127,127,127,.12);width:fit-content}' +
+      '#dsc-sys-bar:hover{background:rgba(127,127,127,.2);color:#c9cdd4}';
+    host.appendChild(st);
+  }
+
+  /**
+   * 折叠侧栏里的系统会话。返回这次折叠了几条（给验收断言用）。
+   * 纯显示层：一条都不删、不改位置，只是加 class。
+   */
+  function foldSysSessions() {
+    var ids = sysSessionIds();
+    if (!ids.length) return 0;
+    var on = sysFoldOn();
+    var n = 0;
+    Array.prototype.forEach.call(
+      document.querySelectorAll('a[href*="/a/chat/s/"]'),
+      function (a) {
+        var href = a.getAttribute('href') || '';
+        for (var i = 0; i < ids.length; i++) {
+          if (href.indexOf(ids[i]) >= 0) {
+            if (on) {
+              a.classList.add('dsc-sys-session');
+            } else {
+              a.classList.remove('dsc-sys-session');
+            }
+            n++;
+            return;
+          }
+        }
+      },
+    );
+    ensureSysStyle();
+    // 开关行：插在第一条系统会话前面（找不到就插在侧栏顶部）。React 不认它，所以
+    // 重渲染不会带走它 —— 但也别指望它会自己更新文案，所以每次都重设一遍文本。
+    var bar = document.getElementById('dsc-sys-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'dsc-sys-bar';
+      bar.addEventListener('click', function () {
+        try {
+          localStorage.setItem(SYS_FOLD_KEY, sysFoldOn() ? '0' : '1');
+        } catch (e) {}
+        foldSysSessions();
+      });
+      var anchor = document.querySelector('a[href*="/a/chat/s/"]');
+      var host = anchor ? anchor.parentElement : null;
+      if (host) host.insertBefore(bar, anchor);
+      else return n;
+    }
+    bar.textContent = on
+      ? '本小姐的杂事 · ' + n + ' 条（点开）'
+      : '收起本小姐的杂事（' + n + ' 条）';
+    return n;
+  }
+
+  /** 侧栏是 React 渲染的：它每次重画都可能把 class 冲掉，所以盯着补 */
+  function watchSidebar() {
+    // 【整段包 try】折叠是**锦上添花**：它崩了绝不能让主链跟着崩。这一条是被实测教出来的。
+    try {
+      foldSysSessions();
+    } catch (e) {
+      try {
+        log('fold-sys 第一遍没成（不影响别处）：' + e);
+      } catch (e2) {}
+    }
+    try {
+      if (!window.MutationObserver) return;
+      var pending = false;
+      new MutationObserver(function () {
+        // 【为什么要 debounce】侧栏重渲染会连爆几十个 mutation，每次都全量扫一遍太浪费
+        if (pending) return;
+        pending = true;
+        setTimeout(function () {
+          pending = false;
+          try {
+            foldSysSessions();
+          } catch (e) {}
+        }, 300);
+      })
+        // 【这里千万别写 document.body】`document_start` 阶段 body 还是 null，
+        // `.observe(null, …)` 抛 TypeError。而这个模块排在 **deepseek-client 之前**、
+        // 又在同一个注入块里顺序执行 —— 它一崩，后面整条链全不执行：实测
+        // `__DSC_REPORT_TURN__` / `__DSC_DS_UTIL__` 全变 undefined，屏幕感知也跟着废。
+        // 兜到 document 本身（它一定在），子树的增删照样能观察到。
+        .observe(document.documentElement || document, { childList: true, subtree: true });
+    } catch (e) {
+      try {
+        log('fold-sys 观察器起不来（不影响别处）：' + e);
+      } catch (e2) {}
+    }
+  }
+
+  // 【为什么要等 DOM 就绪】本脚本在 `document_start` 执行，此时页面还是空的：没有 head、
+  // 没有 body、侧栏一条链接都没有。实测在这一刻跑一整遍的后果是 —— 样式表插不进去（抛错），
+  // 于是观察器那半段也被跳过，从此再没有人补，折叠**永远不会生效**（探针里
+  // `sel:100` 但 `style:false bar:false` 就是这个现场）。所以引导必须推迟到 DOM 就绪。
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', watchSidebar, { once: true });
+  } else {
+    watchSidebar();
+  }
+
+  // 验收用：数一下现在折叠了几条（0 = 没认出来）
+  // `miss` = 认出了 id 但侧栏里根本没有这条链接（多半是更早的会话、侧栏没渲染到），
+  // 所以**不能**断言 hidden === ids —— 能断言的是 hidden === ids - miss.length。
+  window.__DSC_FOLD_SYS__ = function () {
+    var ids = sysSessionIds();
+    var links = [];
+    Array.prototype.forEach.call(
+      document.querySelectorAll('a[href*="/a/chat/s/"]'),
+      function (a) {
+        links.push(String(a.getAttribute('href') || ''));
+      },
+    );
+    var miss = [];
+    for (var i = 0; i < ids.length; i++) {
+      var hit = false;
+      for (var j = 0; j < links.length; j++) {
+        if (links[j].indexOf(ids[i]) >= 0) {
+          hit = true;
+          break;
+        }
+      }
+      if (!hit) miss.push(ids[i].slice(0, 8));
+    }
+    return {
+      ids: ids.length,
+      links: links.length,
+      hidden: document.querySelectorAll('a.dsc-sys-session').length,
+      miss: miss,
+      folded: sysFoldOn(),
+      bar: !!document.getElementById('dsc-sys-bar'),
+    };
   };
 
   // 验收用：模拟"一轮说完了"（真的完成一轮要能解析出助手回复，脚本没法轻易造）
