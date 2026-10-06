@@ -1,4 +1,4 @@
-/* 立绘层端到端验收：内置 DeepSeek 娘 + 自建角色上传自己的图。
+﻿/* 立绘层端到端验收：内置 DeepSeek 娘 + 自建角色上传自己的图。
  *
  * 【为什么这几条必须真跑起来验】立绘是"壳与页面两边凑出来的一张图"：
  *   ① 素材在**壳**里（内置的编进 exe，上传的落在数据目录），页面只有一次 IPC 拿到它；
@@ -188,7 +188,7 @@ check(
   !!(av && av.natW > 0 && av.natH > 0),
   av ? `${av.natW}×${av.natH}` : '',
 );
-check('就是那张 1024×1536 的 DeepSeek 娘', !!(av && av.natW === 1024 && av.natH === 1536), av ? `${av.natW}×${av.natH}` : '');
+check('就是那张 1280×1920 的 DeepSeek 娘', !!(av && av.natW === 1280 && av.natH === 1920), av ? `${av.natW}×${av.natH}` : '');
 check('浮层可见（opacity=1）', !!(av && av.opacity === '1'), av ? `opacity=${av.opacity}` : '');
 
 // 几何 + 不吃事件
@@ -313,10 +313,10 @@ for (let i = 0; i < 30; i++) {
   await sleep(400);
 }
 check('设置界面有立绘卡片', ui.hasCard === true, JSON.stringify(ui).slice(0, 170));
-check('卡片里的预览真的解码出了内置立绘', ui.natW === 1024, `natW=${ui.natW}`);
+check('卡片里的预览真的解码出了内置立绘', ui.natW === 1280, `natW=${ui.natW}`);
 check(
   '卡片标了来源与尺寸',
-  /内置 DeepSeek 娘/.test(ui.meta || '') && /1024×1536/.test(ui.meta || ''),
+  /内置 DeepSeek 娘/.test(ui.meta || '') && /1280×1920/.test(ui.meta || ''),
   String(ui.meta),
 );
 check('没传图时「清除」是禁用的', ui.clearDisabled === true, `disabled=${ui.clearDisabled}`);
@@ -454,13 +454,13 @@ check('Rust 会回报名单（设置界面与排查都用得上）', Array.isArr
 const fb = JSON.parse(
   await evalIn(
     main,
-    `window.__TAURI_INTERNALS__.invoke('dsc_avatar_get', { id: null, variant: 'happy' })
+    `window.__TAURI_INTERNALS__.invoke('dsc_avatar_get', { id: null, variant: 'zzz-not-a-variant' })
        .then(v => JSON.stringify({ variant: v.variant, source: v.source, len: (v.dataUrl || '').length }))
        .catch(e => JSON.stringify({ err: String(e) }))`,
   ),
 );
 check(
-  '★ 缺的变体会回落到 neutral（不会变空白立绘）',
+  '★ 不认识的变体名会回落到 neutral（不会变空白立绘）',
   !fb.err && fb.variant === 'neutral' && fb.len > 100000,
   JSON.stringify(fb).slice(0, 140),
 );
@@ -523,6 +523,21 @@ await setMood({
 await sleep(800);
 const vShy = JSON.parse(await evalIn(main, `JSON.stringify(window.__DSC_AVATAR__())`));
 check('★ 心跳快 + 体温高 → shy（被撩到）', vShy.variant === 'shy', `想要=${vShy.variant}`);
+
+// 素材齐了之后，这三条才是重点：**真的切过去了**，而不是回落 neutral
+check(
+  '★ 内置娘现在有全套差分（7 张都认到了）',
+  v0.variants.length === 7 && v0.variants.includes('smug') && v0.variants.includes('shy'),
+  JSON.stringify(v0.variants),
+);
+check(
+  '★ 变体真的切过去了（实得 = 想要，不是回落）',
+  vAngry.usedVariant === 'angry' &&
+    vSmug.usedVariant === 'smug' &&
+    vSleep.usedVariant === 'sleepy' &&
+    vShy.usedVariant === 'shy',
+  `angry=${vAngry.usedVariant} smug=${vSmug.usedVariant} sleepy=${vSleep.usedVariant} shy=${vShy.usedVariant}`,
+);
 
 // ── 截图（给主人肉眼看的） ────────────────────────────────────────
 try {

@@ -94,6 +94,16 @@ pub fn variants_of(id: &str) -> Vec<String> {
     if out.is_empty() && has_user(id) {
         out.push("single".to_string());
     }
+    // 内置角色的差分编在 exe 里、不在用户目录 —— 不把它们算进来的话，
+    // 界面上内置娘会显示成"一张差分都没有"，跟实际不符。
+    if is_builtin(id) {
+        for (v, _) in BUILTIN_VARIANTS {
+            let s = (*v).to_string();
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    }
     out
 }
 
