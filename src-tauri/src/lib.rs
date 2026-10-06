@@ -1968,6 +1968,10 @@ fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
     let name = personas::effective_persona(cfg.active_persona.as_deref())
         .map(|p| p.name)
         .unwrap_or_default();
+    // 「她看见你屏幕上的东西，顺口说一句」—— 只在屏幕感知开着、而且那句话还新鲜时才给。
+    // 关掉开关之后桌宠不该再挂着上一句（那会让人以为它还在看）。
+    let snap = screen::snapshot();
+    let say = if cfg.screen_watch { snap.say } else { String::new() };
     serde_json::json!({
         "enabled": cfg.pet_enabled,
         "corner": pet::normalize_corner(&cfg.pet_corner),
@@ -1985,6 +1989,8 @@ fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
         "activity": st.activity,
         "mood": st.mood,
         "asleep": st.body.asleep,
+        "say": say,
+        "sayAt": snap.say_at,
         "now": now_ms(),
     })
 }
@@ -2893,9 +2899,13 @@ pub fn run() {
             // 屏幕感知的节拍器：每 TICK_SECS 秒醒一次，到点了才真去截屏（间隔本身是分钟级配置）。
             // 【为什么不用 setInterval 那套】这是 std::thread + sleep，进程退出就没了 ——
             // 正好，这个功能不该在壳外面留下任何东西。
-            std::thread::spawn(|| loop {
+            let h = app.handle().clone();
+            std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(screen::TICK_SECS));
-                screen::tick();
+                // 真的看了一眼才叫醒桌宠 —— 她冒那句话出来，得是他刚被"看见"的那一刻
+                if screen::tick() {
+                    pet::ping(&h);
+                }
             });
 
             // 桌宠：上次开着的话，启动就让她回到桌面上（内部是 spawn，不会在 setup 里卡住）

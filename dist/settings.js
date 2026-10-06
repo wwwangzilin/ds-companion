@@ -658,6 +658,7 @@ async function refreshScreen() {
   // 关着的时候下面那些没有意义 —— 暗下来，别让人以为改间隔能把它打开
   $('sc-every').style.opacity = on ? '1' : '0.45';
   $('sc-chars').style.opacity = on ? '1' : '0.45';
+  $('sc-say').style.opacity = on ? '1' : '0.45';
   placePill(
     'sc-every-pill',
     document.querySelector(`#sc-every button[data-v="${c.screenEveryMinutes}"]`),
@@ -665,6 +666,10 @@ async function refreshScreen() {
   placePill(
     'sc-chars-pill',
     document.querySelector(`#sc-chars button[data-v="${c.screenChars}"]`),
+  );
+  placePill(
+    'sc-say-pill',
+    document.querySelector(`#sc-say button[data-v="${c.screenSayMode || 'local'}"]`),
   );
 
   let s = null;
@@ -759,6 +764,19 @@ $('sc-chars').addEventListener('click', async (e) => {
   try {
     placePill('sc-chars-pill', b);
     await patchCfg({ screenChars: Number(b.dataset.v) });
+  } catch (err) {
+    fail(err);
+  }
+  await refreshScreen().catch(fail);
+});
+
+// 「看见了就说一句」：本地拼、零成本，冒在桌宠头顶
+$('sc-say').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b) return;
+  try {
+    placePill('sc-say-pill', b);
+    await patchCfg({ screenSayMode: b.dataset.v });
   } catch (err) {
     fail(err);
   }

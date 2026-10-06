@@ -54,7 +54,16 @@ async function tick() {
   }
   const text = String(s.activity || '').trim();
   $('bubble-text').textContent = text;
-  $('bubble').classList.toggle('off', !text);
+
+  // 「她看见你屏幕上的东西，顺口说一句」—— 那句话有保鲜期：超过 5 分钟就不摆了
+  //（不然你半小时后瞥一眼桌宠，她还挂着一句你早就不在看的东西）
+  const say = String(s.say || '').trim();
+  const sayAt = Number(s.sayAt) || 0;
+  const fresh = !!say && sayAt > 0 && Number(s.now || Date.now()) - sayAt < 5 * 60 * 1000;
+  $('say-text').textContent = say;
+  $('say').classList.toggle('on', fresh);
+  // 有话说的时候把"正在做的事"收起来 —— 一次只说一件事
+  $('bubble').classList.toggle('off', !text || fresh);
   document.body.classList.toggle('asleep', !!s.asleep);
 
   // 验收脚本要能问"现在画出来的是谁、哪个表情"—— 别让它去猜图片内容
@@ -69,6 +78,8 @@ async function tick() {
     mood: s.mood,
     asleep: !!s.asleep,
     corner: s.corner,
+    say,
+    sayFresh: fresh,
     now: s.now,
   };
 }

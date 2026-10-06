@@ -20,6 +20,41 @@ body {
   cursor: default;
 }
 
+/* ── 她说那句话（看见屏幕上的东西时的反应）────────────────────────────
+   和下面那条"正在干什么"共用头顶那 44px 的位置，但**同一时刻只显示一个**：
+   一次只说一件事，两个一起冒看着像刷屏。
+   两条的样式刻意不一样 —— 这句是"对你说的"，所以底色更实、带主题色描边。 */
+#say {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  justify-content: center;
+  opacity: 0;
+  transform: translateY(-5px);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+  pointer-events: none;
+}
+#say.on {
+  opacity: 1;
+  transform: translateY(0);
+}
+#say span {
+  max-width: 194px;
+  padding: 5px 10px;
+  border-radius: 11px;
+  background: rgba(30, 20, 48, 0.9);
+  color: #f3efff;
+  font: 12.5px/1.38 "Microsoft YaHei", system-ui, sans-serif;
+  /* 最多两行 —— 头顶只留了 44px，多出来的会压到她的脸上 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(167, 139, 250, 0.42);
+}
+
 /* ── 头顶那条"正在干什么" ────────────────────────────────────────── */
 #bubble {
   position: absolute;

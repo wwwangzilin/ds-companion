@@ -656,6 +656,14 @@
                   <button data-v="300">300 字</button>
                 </div>
               </div>
+              <div class="gate">
+                <span class="gate-label" title="她看见屏幕上的东西时，在桌宠头顶冒一句（本地拼的，不花额度）">看见了</span>
+                <div class="seg small" id="sc-say">
+                  <span class="seg-pill" id="sc-say-pill"></span>
+                  <button data-v="local">顺口说一句</button>
+                  <button data-v="off">别说</button>
+                </div>
+              </div>
             </div>
             <div class="row" style="display:flex;gap:8px;align-items:center">
               <code id="sc-now" style="flex:1 1 auto;min-width:0;padding:7px 10px;border-radius:6px;background:rgba(127,127,127,.14);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">还没有看过</code>
@@ -671,6 +679,11 @@
               <b>密码管理器 / 银行 / 支付类软件在前台时，这一趟根本不截</b>（不是打码，是不看）。
               她自己的窗口在前台时也不截。送进对话的只有清洗并截断后的那 200~300 字，
               而且<b>和上一轮一模一样就不再重复送</b>（同一个页面盯久了不该每轮都花额度）。
+            </p>
+            <p class="hint">
+              <b>「顺口说一句」是本地拼的</b>（"主人居然在看「…」"这一类），不花额度；
+              那句话会冒在<b>桌宠</b>头顶，超过 5 分钟就不摆了。想改措辞在
+              <code>screen.rs</code> 的 <code>local_line</code> 那张表里。
             </p>
           </section>
 

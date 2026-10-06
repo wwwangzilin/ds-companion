@@ -140,6 +140,16 @@ pub struct AppConfig {
     /// 一次最多喂给她多少字（送进对话的那一段）
     #[serde(default = "default_screen_chars")]
     pub screen_chars: u32,
+    /// **看见屏幕上的东西时，要不要顺口说一句**（冒在桌宠的气泡里）。
+    ///
+    /// `local` = 用本地模板拼（零成本，措辞是"主人居然在看「…」"这一类）；
+    /// `off` = 只把内容喂进对话，不冒泡。
+    ///
+    /// 【为什么默认让她说】这一条是主人点名要的 —— 光"她知道你在看什么"看不出来，
+    /// 得让她冒一句你才知道她真的看见了。而**本地拼**就够了：要的就是
+    /// "主人居然在看……"这种反应，不是一段小作文（后者每 5 分钟花一次额度，不值）。
+    #[serde(default = "default_screen_say")]
+    pub screen_say_mode: String,
     /// 虚拟身体层（困倦/体力/饿/心跳）注入进【状态】块
     #[serde(default = "default_true")]
     pub body_enabled: bool,
@@ -221,6 +231,11 @@ fn default_screen_every() -> u32 {
 /// 一次喂给她多少字：240（一屏 OCR 出来一千多字，全给就是烧额度）
 fn default_screen_chars() -> u32 {
     240
+}
+
+/// 看见了就说一句（本地拼，零成本）
+fn default_screen_say() -> String {
+    "local".into()
 }
 
 fn default_tool_cap() -> u32 {
@@ -329,6 +344,7 @@ impl Default for AppConfig {
             screen_watch: false,
             screen_every_minutes: default_screen_every(),
             screen_chars: default_screen_chars(),
+            screen_say_mode: default_screen_say(),
             body_enabled: true,
             user_state_enabled: true,
             self_review_mode: default_review_mode(),
@@ -644,6 +660,8 @@ mod tests {
         assert!(!d.screen_watch, "screen_watch 默认必须关（要勾选确认才开）");
         assert_eq!(d.screen_every_minutes, 5);
         assert_eq!(d.screen_chars, 240);
+        // 看见了就顺口说一句（主人点名要的），本地拼、不花额度
+        assert_eq!(d.screen_say_mode, "local");
     }
 
     /// 端到端：一份坏 config.json 必须被隔离成 `.bad-*`，而不是被下一次保存悄悄覆盖。

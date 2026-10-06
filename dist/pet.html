@@ -12,6 +12,9 @@
     <link rel="stylesheet" href="pet.css" />
   </head>
   <body>
+    <!-- 两层气泡：say = 她对你说的那句（更醒目、带主题色描边）；bubble = 她手上正在做的事。
+         同一时刻只显示一个 —— 一次只说一件事（两个一起冒看着像刷屏）。 -->
+    <div id="say" class="off"><span id="say-text"></span></div>
     <div id="bubble" class="off"><span id="bubble-text"></span></div>
     <div id="stage">
       <img class="layer" id="layer-a" alt="" draggable="false" />

@@ -16,7 +16,7 @@
  *   node .verify/verify-screen.mjs
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -216,7 +216,10 @@ check('开关初始是关的', ui.checked === false);
 check('间隔有 6 档可选（1/2/5/10/15/30）', ui.every === 6, String(ui.every));
 check('字数有 3 档可选（200/240/300）', ui.chars === 3, String(ui.chars));
 check('确认卡初始是收起的', ui.maskHidden === true);
-check('读数明说"还没有看过"', /还没有看过/.test(ui.now), ui.now);
+// 【别断言"还没有看过"】壳里那份快照是**进程内存**，而这个脚本可能在一个已经跑过
+// 一轮的实例上再跑一次 —— 那时读数会正确地显示"刚刚没看：没开"。真正要盯的是：
+// 关着的时候它必须说"没开"，而不是停在别的理由上（那会让人以为它还在偷偷看）。
+check('读数说"没开"（不是留空，也不是停在别的理由上）', /没开/.test(ui.now), ui.now);
 
 // ══════════════════ B. 打开必须过确认卡 ══════════════════
 console.log('\n=== B. 打开必须过确认卡（这一条是这一项的命门）===');
@@ -320,9 +323,86 @@ if (buildErr) {
   const hasSpacedHan = /[\u4e00-\u9fff] [\u4e00-\u9fff]/.test(String(snap.text || ''));
   check('汉字之间的空格被说掉了', hasSpacedHan === false, JSON.stringify(String(snap.text || '').slice(0, 60)));
 
+  // ══════════════════ C2. 看见了要顺口说一句 ══════════════════
+  console.log('\n=== C2. 看见了顺口说一句（冒在桌宠头顶）===');
+  check('生成了那句话', String(snap.say || '').trim().length > 0, JSON.stringify(snap.say || ''));
+  check('那句话带着她看到的东西（引号里）', /「.+」/.test(String(snap.say || '')), String(snap.say || ''));
+  check('那句话带时间戳（桌宠据此判过没过期）', Number(snap.sayAt) > 0, String(snap.sayAt));
+  console.log(`    ↳ 她说：${snap.say}`);
+  // 关掉「说一句」就不该再有话
+  const cfgSay = await call(`'config_get'`);
+  await call(
+    `'config_set', { cfg: ${JSON.stringify({ ...cfgSay, screenSayMode: 'off' })} }`,
+  );
+  await sleep(300);
+  const snapNoSay = await call(`'dsc_screen_now'`);
+  check('关掉「说一句」之后就不说了', String(snapNoSay.say || '') === '', JSON.stringify(snapNoSay.say || ''));
+  await call(
+    `'config_set', { cfg: ${JSON.stringify({ ...(await call(`'config_get'`)), screenSayMode: 'local' })} }`,
+  );
+  await sleep(300);
+
+  // ★端到端：那句话真的冒到桌宠立绘上了吗★
+  const petCfg = await call(`'config_get'`);
+  await call(
+    `'config_set', { cfg: ${JSON.stringify({ ...petCfg, petEnabled: true, screenSayMode: 'local' })} }`,
+  );
+  await sleep(2200);
+  const petT = await findTarget('pet.html', 12000);
+  check('桌宠窗口开起来了', !!petT);
+  if (petT) {
+    // 重新看一眼，确保 say 是新鲜的
+    await bringToFront(a);
+    await sleep(400);
+    await call(`'dsc_screen_now'`);
+    await sleep(300);
+    await evalIn(petT, `window.__DSC_PET_TICK__ && window.__DSC_PET_TICK__()`);
+    await sleep(1200);
+    const view = JSON.parse(
+      (await evalIn(petT, `JSON.stringify(window.__DSC_PET_VIEW__ || null)`)) || 'null',
+    );
+    check('桌宠拿到了那句话', !!view && String(view.say || '').length > 0, JSON.stringify(view && view.say));
+    check('桌宠认为那句话还新鲜', !!view && view.sayFresh === true, JSON.stringify(view && view.sayFresh));
+    const shown = JSON.parse(
+      (await evalIn(
+        petT,
+        `(function(){
+           const el = document.getElementById('say');
+           const tx = document.getElementById('say-text');
+           return JSON.stringify({
+             on: el.classList.contains('on'),
+             text: tx.textContent,
+             bubbleOff: document.getElementById('bubble').classList.contains('off'),
+             w: el.offsetWidth, h: el.offsetHeight
+           });
+         })()`,
+      )) || '{}',
+    );
+    // ★"DOM 里有这个 div"不等于它显示出来了★（Quill 那条教训）—— 所以看 offsetHeight
+    check('那句话真的显示出来了（有高度）', shown.on === true && shown.h > 0, JSON.stringify(shown));
+    check('显示的就是那句话', String(shown.text || '').length > 0, JSON.stringify(shown.text));
+    check('有话说时"正在做的事"那条收起（一次只说一件事）', shown.bubbleOff === true);
+    try {
+      const shotR = await send(petT, 'Page.captureScreenshot', { format: 'png' });
+      const dir = join(process.cwd(), 'preview');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'pet-say.png'), Buffer.from(shotR.data, 'base64'));
+      console.log('[shot] preview/pet-say.png');
+    } catch (e) {
+      console.log('[shot] 失败 ' + e);
+    }
+    await call(
+      `'config_set', { cfg: ${JSON.stringify({ ...(await call(`'config_get'`)), petEnabled: false })} }`,
+    );
+    await sleep(600);
+  }
+
   // ══════════════════ D. 敏感软件在前台：这一趟根本不截 ══════════════════
   console.log('\n=== D. 密码管理器在前台时不截 ===');
-  const beforeMs = Number(snap.ms);
+  // ⚠ 基线必须在这一步**紧挨着**取：上面 C2 段又跑过几次「现在看一次」，
+  // 早先那个 ms 早就不代表"上一次"了（第一版就是这么假红的）。
+  const base = await call(`'dsc_screen_state'`);
+  const beforeMs = Number(base.ms);
   const b = launch(SECRET_EXE, ['我的密码库']);
   await sleep(900);
   await bringToFront(b);
@@ -338,7 +418,7 @@ if (buildErr) {
     Number(snap2.ms) === beforeMs,
     `ms=${snap2.ms} 上一次=${beforeMs}`,
   );
-  check('跳过也记了时间（读数会更新成"刚刚没看"）', Number(snap2.at) >= Number(snap.at), `${snap2.at} vs ${snap.at}`);
+  check('跳过也记了时间（读数会更新成"刚刚没看"）', Number(snap2.at) >= Number(base.at), `${snap2.at} vs ${base.at}`);
   killProbes();
 }
 

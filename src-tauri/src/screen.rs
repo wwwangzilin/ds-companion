@@ -50,6 +50,10 @@ pub struct Snapshot {
     pub size: String,
     /// 这一次**没看**的原因（空 = 看了）。跳过也要记 —— 界面上要能解释"为什么没动静"
     pub skipped: String,
+    /// 她看见之后顺口说的那句话（空 = 这次不说）。冒在桌宠的气泡里。
+    pub say: String,
+    /// 那句话是什么时候说的（ms）—— 桌宠据此判断"这句话是不是已经过时了"
+    pub say_at: u64,
 }
 
 /// 上一次尝试的时间 + 最近一次结果。**只在内存里**：退出即散。
@@ -206,11 +210,84 @@ pub fn compose(lines: &[String], max_chars: u32) -> String {
     out
 }
 
+/// 按**字符**截断（不是字节）—— 中文一个字三字节，按字节切会切出半个字
+fn clip_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    s.chars().take(max).collect()
+}
+
+/// 从她看到的那段里挑一个"最像主题"的短句，当那句话的宾语。
+///
+/// 【为什么不能直接拿第一行】第一行经常是导航栏、播放量、时间码那类碎片；也可能整屏
+/// 都是碎的。所以按"标题的样子"找：不太短、不太长、有中日韩字、不是链接 ——
+/// 找不到就退回第一行够长的那个（宁可说一句含糊的，也别什么都不说）。
+/// 主题最多留这么多个字。
+///
+/// 【为什么是 18】桌宠头顶只留了 44px（两行 12.5px 的字），而模板最长的那条
+/// 前后还要各占几个字 —— 主体再长就压到她脸上了。
+const SUBJECT_CHARS: usize = 18;
+
+pub fn pick_subject(text: &str) -> Option<String> {
+    let mut fallback: Option<String> = None;
+    for raw in text.lines() {
+        let t = raw.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if fallback.is_none() && t.chars().count() >= 4 {
+            fallback = Some(clip_chars(t, SUBJECT_CHARS));
+        }
+        let n = t.chars().count();
+        if n >= 5 && n <= 40 && t.chars().any(is_cjk) && !t.contains("://") {
+            return Some(clip_chars(t, SUBJECT_CHARS));
+        }
+    }
+    fallback
+}
+
+/// 本地把"她看见的东西"说成一句话。**零成本**。
+///
+/// 【为什么不上模型】主人要的就是"主人居然在看……"这种反应，不是一段小作文 ——
+/// 而它每隔几分钟就来一次，走隐藏链等于定期花额度。模板拼就够了，措辞想调改这张表。
+///
+/// 【为什么按内容哈希选模板】同一屏内容每次说同一句，气泡不会闪；内容一变，
+/// 哈希跟着变，措辞也就跟着换了（不至于每次都是同一句）。
+///
+/// 【为什么模板里不带自称】它得对任何角色都成立 —— "本小姐"这种是某个角色的人设，
+/// 写死在壳里就等于把壳绑给一个角色了。
+pub fn local_line(subject: &str) -> String {
+    const TPL: &[&str] = &[
+        "主人居然在看「{}」",
+        "「{}」……在看这个啊",
+        "又打开了「{}」呢",
+        "哦——「{}」",
+        "在「{}」里泡着呢",
+        "主人看「{}」看得好认真",
+        "这个「{}」，我看见了",
+    ];
+    let h = subject
+        .bytes()
+        .fold(2166136261u32, |a, b| (a ^ b as u32).wrapping_mul(16777619));
+    TPL[(h as usize) % TPL.len()].replace("{}", subject)
+}
+
+/// 「看见了就说一句」—— 按配置和内容决定这次说不说，返回（那句话, 时间戳）
+fn say_for(cfg: &crate::config::AppConfig, text: &str) -> (String, u64) {
+    if cfg.screen_say_mode != "local" {
+        return (String::new(), 0);
+    }
+    match pick_subject(text) {
+        Some(sub) => (local_line(&sub), crate::now_ms()),
+        None => (String::new(), 0),
+    }
+}
+
 /// 解析 `ocr.ps1` 的输出：第一行是 `#meta ...`，之后每行一条文字。
 ///
 /// 返回（元信息键值, 正文行）
-pub fn parse_output(stdout: &str) -> (std::collections::HashMap<String, String>, Vec<String>) {
-    let mut meta = std::collections::HashMap::new();
+pub fn parse_output(stdout: &str) -> (std::collections::HashMap<String, String>, Vec<String>) {    let mut meta = std::collections::HashMap::new();
     let mut lines = Vec::new();
     for (i, raw) in stdout.lines().enumerate() {
         let l = raw.trim_end_matches('\r');
@@ -305,7 +382,9 @@ fn skip_reason(cfg: &crate::config::AppConfig) -> String {
 }
 
 /// 后台每 TICK_SECS 秒来一次：到点了就截一次。
-pub fn tick() {
+///
+/// 返回 `true` = 这一趟**真的看了**（有新内容）—— 调用方据此决定要不要叫醒桌宠。
+pub fn tick() -> bool {
     let cfg = crate::config::load();
     let now = crate::now_ms();
     let every = cfg.screen_every_minutes.clamp(MIN_MINUTES, MAX_MINUTES) as u64 * 60_000;
@@ -317,7 +396,7 @@ pub fn tick() {
         now.saturating_sub(s.last_try) >= every
     });
     if !due {
-        return;
+        return false;
     }
 
     let reason = skip_reason(&cfg);
@@ -329,7 +408,7 @@ pub fn tick() {
             snap.at = now;
             snap.skipped = reason;
         });
-        return;
+        return false;
     }
 
     let started = std::time::Instant::now();
@@ -345,6 +424,7 @@ pub fn tick() {
             Ok((meta, lines)) => {
                 let raw_lines = lines.len() as u32;
                 let text = compose(&lines, cfg.screen_chars);
+                let (say, say_at) = say_for(&cfg, &text);
                 snap.lines = raw_lines;
                 snap.chars = text.chars().count() as u32;
                 snap.mode = meta.get("mode").cloned().unwrap_or_default();
@@ -353,6 +433,8 @@ pub fn tick() {
                     meta.get("w").cloned().unwrap_or_default(),
                     meta.get("h").cloned().unwrap_or_default()
                 );
+                snap.say = say;
+                snap.say_at = say_at;
                 snap.text = text;
             }
             Err(e) => {
@@ -369,6 +451,7 @@ pub fn tick() {
         with_state(|s| s.snap.as_ref().map(|x| x.lines).unwrap_or(0)),
         with_state(|s| s.snap.as_ref().map(|x| x.chars).unwrap_or(0))
     ));
+    true
 }
 
 /// 界面/命令要的那一份快照。
@@ -412,8 +495,12 @@ pub fn look_now() -> Snapshot {
         match result {
             Ok((meta, lines)) => {
                 snap.lines = lines.len() as u32;
-                snap.text = compose(&lines, cfg.screen_chars);
-                snap.chars = snap.text.chars().count() as u32;
+                let text = compose(&lines, cfg.screen_chars);
+                let (say, say_at) = say_for(&cfg, &text);
+                snap.chars = text.chars().count() as u32;
+                snap.say = say;
+                snap.say_at = say_at;
+                snap.text = text;
                 snap.mode = meta.get("mode").cloned().unwrap_or_default();
                 snap.size = format!(
                     "{}x{}",
@@ -561,9 +648,68 @@ mod tests {
         assert!(lines.is_empty());
     }
 
+    // ── 「看见了就说一句」────────────────────────────────────────────────
+
+    /// 主题要挑"像标题"的那行，而不是傻乎乎拿第一行（第一行常是播放量/时间码）
     #[test]
-    fn encoded_command_is_utf16le_base64() {
-        // 用一小段验编码形状：UTF-16LE 的 "Hi" = 48 00 69 00 → 4 字节 → "SABpAA=="
+    fn pick_subject_prefers_a_title_shaped_line() {
+        let text = "0\n17:30:00\n中学电话亭的那面墙\n弹幕列表";
+        assert_eq!(pick_subject(text).as_deref(), Some("中学电话亭的那面墙"));
+        // 链接不当主题
+        let text2 = "https://www.bilibili.com\n小约翰可汗的奇葩小国";
+        assert_eq!(pick_subject(text2).as_deref(), Some("小约翰可汗的奇葩小国"));
+    }
+
+    /// 一屏全是碎片时也得能说点什么（退回第一行够长的那个）
+    #[test]
+    fn pick_subject_falls_back_to_anything_usable() {
+        // 4 个字：够当兜底，但还不够"像标题"（那要 5 个起）
+        assert_eq!(pick_subject("一二三四\n五六七").as_deref(), Some("一二三四"));
+        // 实在没东西可说就别说
+        assert_eq!(pick_subject(""), None);
+        assert_eq!(pick_subject("0\n1"), None);
+    }
+
+    /// 太长的主体要截（桌宠头顶只放得下两行）
+    #[test]
+    fn pick_subject_clips_the_long_ones() {
+        let long = "标".repeat(80);
+        let got = pick_subject(&long).unwrap();
+        assert_eq!(got.chars().count(), SUBJECT_CHARS);
+    }
+
+    /// ★同一屏内容每次说同一句★（否则气泡每 15 秒闪一次措辞）
+    #[test]
+    fn local_line_is_stable_and_carries_the_subject() {
+        let a = local_line("小约翰可汗的奇葩小国");
+        let b = local_line("小约翰可汗的奇葩小国");
+        assert_eq!(a, b);
+        assert!(a.contains("小约翰可汗的奇葩小国"), "{a}");
+        // 模板里那个 {} 一定要被换掉，别把占位符冒出来
+        assert!(!a.contains("{}"), "{a}");
+        // 内容不同 → 措辞通常会换（不强制，但至少得是句正常话）
+        let c = local_line("完全不同的另一个主题");
+        assert!(c.contains("完全不同的另一个主题"), "{c}");
+    }
+
+    /// 关掉「说一句」就真的不说；开着才说
+    #[test]
+    fn say_for_respects_the_switch() {
+        let mut cfg = crate::config::AppConfig::default();
+        cfg.screen_say_mode = "local".to_string();
+        let (say, at) = say_for(&cfg, "中学电话亭的那面墙，为何成了学生的哭墙？");
+        assert!(!say.is_empty());
+        assert!(say.contains("中学电话亭的那面墙"));
+        assert!(at > 0);
+
+        cfg.screen_say_mode = "off".to_string();
+        let (say2, at2) = say_for(&cfg, "中学电话亭的那面墙，为何成了学生的哭墙？");
+        assert!(say2.is_empty());
+        assert_eq!(at2, 0);
+    }
+
+    #[test]
+    fn encoded_command_is_utf16le_base64() {        // 用一小段验编码形状：UTF-16LE 的 "Hi" = 48 00 69 00 → 4 字节 → "SABpAA=="
         let got = encoded_command("Hi");
         assert_eq!(got, "SABpAA==");
         // 中文也要能过（这是整个方案的前提：脚本里有中文注释）
