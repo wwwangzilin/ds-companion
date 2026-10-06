@@ -2727,6 +2727,62 @@
   window.__DSC_INJECT_RECEIPT__ = function () {
     return lastReceipt ? JSON.parse(JSON.stringify(lastReceipt)) : null;
   };
+  // ── 把一张图交给模型看（多模态那条路的端到端入口）────────────────────
+  //
+  // 【为什么要有这个探针】"能传图"这件事没法靠读代码确认：PoW 上传、id 字段名、
+  // ref_file_ids 到底认不认 —— 只有真跑一次、让模型把图上的字念出来才算数。
+  // 不给图的画它就现画一张带字的测试图（别拿真截图去试，那会往账号里塞东西）。
+  //
+  // ⚠ 每调一次，账号里就多一张图（上游没有删除接口）。
+  function probeCanvas() {
+    var c = document.createElement('canvas');
+    c.width = 360;
+    c.height = 140;
+    var g = c.getContext('2d');
+    g.fillStyle = '#101018';
+    g.fillRect(0, 0, c.width, c.height);
+    g.fillStyle = '#eae6ff';
+    g.font = '30px sans-serif';
+    g.fillText('主人正在看 Tauri 文档', 16, 60);
+    g.fillStyle = '#a78bfa';
+    g.font = '22px sans-serif';
+    g.fillText('vision probe 2026', 16, 108);
+    return new Promise(function (resolve) {
+      c.toBlob(function (b) {
+        resolve(b);
+      }, 'image/png');
+    });
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    var parts = String(dataUrl).split(',');
+    var bin = atob(parts[1]);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var m = parts[0].match(/:(.*?);/);
+    return new Blob([bytes], { type: (m && m[1]) || 'image/png' });
+  }
+
+  window.__DSC_VISION_TRY__ = function (dataUrl, prompt) {
+    // 【别写 root】这个文件里**没有** root 这个变量（那是 deepseek-client / sense 的写法，
+    // 它们外面包了 `(function (root) {…})(window)`）。第一版抄过来，运行时报
+    // "deepseek-client 没加载" —— 其实是被 ReferenceError 兜住了，白查一轮。
+    var util = window.__DSC_DS_UTIL__;
+    if (!util || typeof util.seeImage !== 'function') {
+      return Promise.reject(new Error('deepseek-client 没加载（或版本太旧）'));
+    }
+    var blobP = dataUrl ? Promise.resolve(dataUrlToBlob(dataUrl)) : probeCanvas();
+    return blobP.then(function (blob) {
+      log('VISION try: ' + Math.round(blob.size / 1024) + 'KB');
+      return util.seeImage(
+        blob,
+        prompt ||
+          '这张图上写着什么？用一句话原样说出来（不要解释、不要客套）。如果没看到图，就回"没看到图"。',
+        { filename: 'dsc-vision-probe.png' },
+      );
+    });
+  };
+
   // 验收用：模拟"一轮说完了"（真的完成一轮要能解析出助手回复，脚本没法轻易造）
   window.__DSC_REPORT_TURN__ = function (userText) {
     reportTurn(userText);

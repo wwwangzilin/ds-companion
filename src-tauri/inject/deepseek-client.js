@@ -19,6 +19,9 @@
     powChallenge: '/api/v0/chat/create_pow_challenge',
     createSession: '/api/v0/chat_session/create',
     historyMessages: '/api/v0/chat/history_messages',
+    // 传图给模型用（多模态）。这两个是从页面自己的 main.js 里读出来的，见 uploadFile 的说明。
+    uploadFile: '/api/v0/file/upload_file',
+    fetchFiles: '/api/v0/file/fetch_files',
   };
   var BYPASS_HEADER = 'x-dsc-bypass';
   var SESSION_KEY = 'dsc-memory-session';
@@ -49,6 +52,12 @@
     // **流式渲染进聊天框** —— 而这项目的注入脚本从来不碰上游聊天 DOM（改了也会被
     // React 重渲染盖掉）。所以"对主人不可见的结构化往返"只有隐藏链承载得了。
     act: { session: 'dsc-act-session', chain: 'dsc-chain-act' },
+    // 「看一眼他屏幕上是什么」：传一张图过去问一句。
+    //
+    // 【为什么单独开一个会话】① 图是**引用**的（ref_file_ids），会话里留着一堆图会让
+    // 后续每次请求都把它们当上下文带上 —— 成本一次比一次高；② 攒下来的截图对话
+    // 主人自己删掉就能清干净（这也是当初给 sync 单开会话的同一个理由）。
+    see: { session: 'dsc-see-session', chain: 'dsc-chain-see' },
   };
   var DEFAULT_CHAIN_TURNS = 20;
 
@@ -711,10 +720,16 @@
           ? null
           : opts.parentMessageId,
       prompt: prompt,
-      ref_file_ids: [],
+      // 【多模态挂在这儿】上游自己的字段：这次这条消息要引用哪些已上传的文件。
+      // 空数组 = 纯文字（跟以前一模一样）。
+      ref_file_ids: opts.refFileIds || [],
       thinking_enabled: false,
       search_enabled: false,
     };
+    // 【传图**必须**声明模型】不声明的话服务端会拿会话默认（纯文本模型）去接图，
+    // 然后回一句 `{"biz_code":9,"biz_msg":"invalid ref file id"}` ——
+    // 那句话说得很像"id 格式不对"，其实是"这个模型不收图"（这一轮就是被它带偏的）。
+    if (opts.modelType) body.model_type = opts.modelType;
 
     var started = Date.now();
     var res = await fetch(target, {
@@ -877,6 +892,8 @@
         sessionId: sid,
         parentMessageId: parent || null,
         prompt: prompt,
+        refFileIds: o.refFileIds,
+        modelType: o.modelType,
       });
     } catch (e) {
       // 会话可能已经被删/换号：换一个新的重试一次，不无限重试
@@ -890,6 +907,8 @@
           sessionId: sid,
           parentMessageId: null,
           prompt: prompt,
+          refFileIds: o.refFileIds,
+          modelType: o.modelType,
         });
       } catch (e2) {
         reportAskFailure(k, e, e2);
@@ -993,6 +1012,135 @@
     return r;
   }
 
+  // ── 传一张图上去（给模型"看"用）────────────────────────────────────
+  //
+  // 【这条路是怎么挖出来的】不是我猜的：把页面自己加载的 main.js 拿下来搜了关键字
+  // （`.verify/probe-upload-api.mjs`），原话是
+  //   `let cj="/api/v0/file/upload_file"; ... o.append("file", n); http.post(cj,{body:o,headers:r})`
+  // 所以：FormData 的字段名就是 `file`，而且要带 **PoW 头** —— 上游把上传也列进了
+  // "要挑战的场景"里（同一段代码里 `case "upload_file": return cj`）。
+  //
+  // 【为什么绝不能自己设 content-type】FormData 必须让浏览器自己填 boundary；
+  // 手写 `multipart/form-data` 会缺 boundary，服务端直接解析不了。
+  //
+  // ⚠ 这张图会**留在账号里**（上游没给删除接口，只有 fetch_files 和 fork_file_task）。
+  // 所以调它的地方必须自己管好频率，别当免费的东西用。
+  var UPLOAD_TIMEOUT_MS = 60000;
+
+  async function uploadFile(blob, filename) {
+    var target = ROUTES.uploadFile;
+    var pow = await powHeader(target);
+    var fd = new FormData();
+    fd.append('file', blob, filename || 'screenshot.png');
+    var started = Date.now();
+    var res = await fetch(target, {
+      method: 'POST',
+      credentials: 'include',
+      headers: Object.assign({}, clientHeaders(), pow),
+      body: fd,
+    });
+    var json = null;
+    try {
+      json = await res.json();
+    } catch (e) {
+      throw new Error('上传返回的不是 JSON（HTTP ' + res.status + '）');
+    }
+    if (!res.ok) {
+      throw new Error('上传 HTTP ' + res.status + ' ' + JSON.stringify(json).slice(0, 200));
+    }
+    var biz = json && json.data && json.data.biz_data;
+    // 上游返回的是 `id`（日志里也是按 `g.id` 记的）；顺手兼容 file_id，别写死一个名字
+    var id = biz && (biz.id || biz.file_id);
+    if (!id) {
+      throw new Error('上传回包里没找到文件 id：' + JSON.stringify(json).slice(0, 300));
+    }
+    log('DS upload(' + (Date.now() - started) + 'ms) id=' + id + ' size=' + (blob.size || '?'));
+    return { id: id, raw: biz };
+  }
+
+  /** 查文件状态（上传后是**异步解析**的，拿 id 立刻引用不一定有内容） */
+  async function fetchFiles(ids) {
+    var q = (ids || []).join(',');
+    if (!q) return null;
+    var res = await fetch(ROUTES.fetchFiles + '?file_ids=' + encodeURIComponent(q), {
+      method: 'GET',
+      credentials: 'include',
+      headers: clientHeaders(),
+    });
+    var json = await res.json();
+    return (json && json.data && json.data.biz_data) || null;
+  }
+
+  /**
+   * 挑一个"能收图"的模型类型。
+   *
+   * 【为什么从缓存里读、而不是写死一个 "vision"】这个取值是**服务端下发**的
+   * （`localStorage.__ds_remote_feature_store_model`，实测现在有 default / expert / vision）。
+   * 写死字符串的话它哪天改名了这边就静默失效，而错误信息只说"invalid ref file id"——
+   * 根本看不出是模型不对。宁可多读一眼缓存。
+   */
+  function pickVisionModelType() {
+    try {
+      var j = JSON.parse(localStorage.getItem('__ds_remote_feature_store_model') || 'null');
+      var list = j && j.entries && j.entries.model_configs && j.entries.model_configs.value;
+      if (Array.isArray(list)) {
+        var named = list.filter(function (m) {
+          return m && m.model_type === 'vision';
+        })[0];
+        if (named) return named.model_type;
+        // 名字变了就退一步：挑带 file_feature 的那个（那才是"能收文件"的标志）
+        var byFeat = list.filter(function (m) {
+          return m && m.file_feature;
+        })[0];
+        if (byFeat) return byFeat.model_type;
+      }
+    } catch (e) {
+      /* 缓存格式变了就退回默认，别让这一步把整条链拖死 */
+    }
+    return 'vision';
+  }
+
+  /**
+   * 上传回来的是 `file-<uuid>`，但**发请求要的是服务端 id**（那串裸 uuid）。
+   *
+   * 【这是怎么确认的】前端自己的取法：
+   *   `getRefFileIds(e){ return this.nonreactiveStore.getAllServerIds(e) }`
+   * —— 它取的是 **server id**，不是本地那个 file- 开头的。而后端在 signed_path 里
+   * 写的也是 `file_id=<裸 uuid>`，两边对得上。
+   * 用错格式时上游只回一句 `invalid ref file id`，看着像"id 拼错了"，很难猜到是
+   * "本地 id 和服务端 id 不是同一个东西"（这一轮被它带偏了两次）。
+   */
+  function serverFileId(id) {
+    return String(id || '').replace(/^file-/, '');
+  }
+
+  /**
+   * 传一张图 + 问一句（一次做完）。返回模型的答复文本。
+   *
+   * 【为什么合成一个函数】上传和引用是**必须成对**的：中间任何一步失败，那张图都已经
+   * 留在账号里了 —— 分开写只会让人漏掉"上传成功了但没问"这种半截状态。
+   */
+  async function seeImage(blob, prompt, opts) {
+    var o = opts || {};
+    var up = await uploadFile(blob, o.filename);
+    // 解析要时间（服务端是异步的：status 从 PENDING 到 SUCCESS 实测要几秒）。
+    // 这里不去轮询文件状态 —— 多一次往返、还得写死等待逻辑；等一小会儿直接问，
+    // 图还没好模型就会说它没看到，下一轮再看就是了。
+    if (o.settleMs !== 0) await sleep(o.settleMs || 2500);
+    var r = await ask(o.kind || 'see', prompt, {
+      refFileIds: [serverFileId(up.id)],
+      modelType: o.modelType || pickVisionModelType(),
+      chainTurns: o.chainTurns,
+    });
+    return { text: (r && r.text) || '', fileId: up.id, raw: r };
+  }
+
+  function sleep(ms) {
+    return new Promise(function (r) {
+      setTimeout(r, ms);
+    });
+  }
+
   // extract.js / sense.js 都从这里拿：ask 是带会话链的正路，completion 是裸通道
   root.__DSC_DS_UTIL__ = {
     parseSseText: parseSseText,
@@ -1010,6 +1158,9 @@
     completion: completion,
     ask: ask,
     continueChat: continueChat,
+    uploadFile: uploadFile,
+    fetchFiles: fetchFiles,
+    seeImage: seeImage,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = root.__DSC_DS_UTIL__;
