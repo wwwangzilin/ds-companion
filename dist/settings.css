@@ -1321,6 +1321,44 @@ input[type='range']::-webkit-slider-thumb {
   overflow: visible;
 }
 
+/* ── 工具页 / 日志页的 section 内容区：补内边距与行距 ──────────────────────
+   【为什么需要】这两页的 section 是"老写法" —— 内容直接挂在 .editor 下，而那个类
+   **没有内边距**（只有 .editor-head 自己带）。实测内容左缩进只有 1px，一行行贴到边框上；
+   元素之间也只有 .hint 自带的 10px，开关和输入行之间是 0 间距。
+   元素一多（比如"她看得见你在用什么软件"那节有 7 个）就是主人报的「挤成一坨」。
+
+   【为什么用 CSS 补、而不是给每一节包一层 .fields】包 .fields 要改几十行 HTML，
+   而且以后谁往 section 里加元素都得记得再包一次 —— "要记得"的约定迟早会漏。
+   这里把"内容不能贴边、行与行要分开"变成结构性的：加什么都不会再挤到边框上。 */
+#tab-tools .editor > *:not(.editor-head),
+#tab-log .editor > *:not(.editor-head) {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+
+#tab-tools .editor > * + *:not(.editor-head),
+#tab-log .editor > * + *:not(.editor-head) {
+  margin-top: 10px;
+}
+
+#tab-tools .editor > *:last-child:not(.editor-head),
+#tab-log .editor > *:last-child:not(.editor-head) {
+  margin-bottom: 14px;
+}
+
+/* 工具页也照状态页那段修法（见上面 #tab-state 的注释）：
+   .editor 是 flex:1，而这一页的 section 会随功能变多 —— 一路平分下去每个都被压到
+   100px 出头，内容全溢出、互相盖住，看着就是"挤成一坨"。改成按内容高度展开、让整页滚。 */
+#tab-tools .content,
+#tab-log .content {
+  overflow-y: auto;
+}
+
+#tab-tools .editor,
+#tab-log .editor {
+  flex: 0 0 auto;
+}
+
 .fields .row {
   display: grid;
   grid-template-columns: 1fr 1.4fr;
