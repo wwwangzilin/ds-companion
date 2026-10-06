@@ -1783,7 +1783,30 @@ async function reloadMemories() {
 function memVisible() {
   if (memFilter === 'global') return memories.filter((m) => !m.characterId);
   if (memFilter === 'char') return memories.filter((m) => !!m.characterId);
+  if (memFilter === 'active') {
+    const me = effectiveCharacterId();
+    return memories.filter((m) => !m.characterId || m.characterId === me);
+  }
   return memories;
+}
+
+/**
+ * 【为什么要单独排一次】默认视图原来是**纯按权重降序** —— 而权重是跨角色的
+ * 同一个量纲，于是三个角色的记忆按分数交错排列，一眼扫过去就是"记串了"
+ * （主人就是这么反馈的）。改成**先按角色聚块**：当前角色的排最前、全局次之、
+ * 其余角色各聚一块，块内再按权重。
+ */
+function memSorted(list) {
+  const me = effectiveCharacterId();
+  const rank = (m) => (me && m.characterId === me ? 0 : !m.characterId ? 1 : 2);
+  return list.slice().sort((a, b) => {
+    const r = rank(a) - rank(b);
+    if (r !== 0) return r;
+    if ((a.characterId || '') !== (b.characterId || '')) {
+      return String(a.characterId || '').localeCompare(String(b.characterId || ''));
+    }
+    return (b.weight || 0) - (a.weight || 0);
+  });
 }
 
 function charName(id) {
@@ -1793,7 +1816,7 @@ function charName(id) {
 
 function renderMemList() {
   const box = $('mem-list');
-  const list = memVisible();
+  const list = memSorted(memVisible());
   box.innerHTML = '';
   if (!list.length) {
     box.innerHTML = memoryEmptyHint();
