@@ -1795,16 +1795,32 @@ struct AvatarView {
     variants: Vec<String>,
 }
 
-fn avatar_view(id: &str, variant: &str) -> AvatarView {
+/// `want_data = false` 时不读图、不编码 —— 只 stat + 读 PNG 头量个尺寸。
+///
+/// 【为什么要这个开关】桌宠那条路绝大多数时候是"手上那张没变"，拿到 dataURL 也会丢掉。
+/// 而一张内置立绘 ~2 MB，base64 成 ~2.7 MB 的字符串白造一次要 **48 ms**（实测），
+/// 且 `dsc_pet_state` 是同步命令、占着主线程 —— 那就是"桌宠反应有点迟钝"的一部分。
+fn avatar_view(id: &str, variant: &str, want_data: bool) -> AvatarView {
     let has_user = avatar::has_user(id);
     let variants = avatar::variants_of(id);
-    match avatar::read_variant(id, variant) {
-        Some((bytes, source, actual)) => {
-            let (width, height) = avatar::png_size(&bytes);
+    match avatar::which(id, variant) {
+        Some((source, actual)) => {
+            let (width, height, data_url) = if want_data {
+                match avatar::read_variant(id, variant) {
+                    Some((bytes, _, _)) => {
+                        let (w, h) = avatar::png_size(&bytes);
+                        (w, h, avatar::to_data_url(&bytes))
+                    }
+                    None => (0, 0, String::new()),
+                }
+            } else {
+                let (w, h) = avatar::size_of(id, source, &actual);
+                (w, h, String::new())
+            };
             AvatarView {
                 id: avatar::sanitize(id),
                 source: source.to_string(),
-                data_url: avatar::to_data_url(&bytes),
+                data_url,
                 // 量不出尺寸时给个 3:4 兜底，页面不至于退回一个 0 高的框
                 width: if width == 0 { 768 } else { width },
                 height: if height == 0 { 1024 } else { height },
@@ -1842,9 +1858,9 @@ fn dsc_avatar_get(id: Option<String>, variant: Option<String>) -> AvatarView {
         v.as_str()
     };
     if id.trim().is_empty() {
-        return avatar_view(avatar::BUILTIN_ID, v);
+        return avatar_view(avatar::BUILTIN_ID, v, true);
     }
-    avatar_view(&id, v)
+    avatar_view(&id, v, true)
 }
 
 /// 给某个角色传一张立绘（**设置窗口**用）。`data` 可以是 dataURL，也可以是裸 base64。
@@ -1856,10 +1872,10 @@ fn dsc_avatar_set(id: String, data: String, variant: Option<String>) -> Result<A
     let v = variant.unwrap_or_default();
     if v.trim().is_empty() {
         avatar::save(&id, &bytes)?;
-        return Ok(avatar_view(&id, avatar::DEFAULT_VARIANT));
+        return Ok(avatar_view(&id, avatar::DEFAULT_VARIANT, true));
     }
     avatar::save_variant(&id, v.trim(), &bytes)?;
-    Ok(avatar_view(&id, v.trim()))
+    Ok(avatar_view(&id, v.trim(), true))
 }
 
 /// 清掉用户传的图：内置角色回落到内置素材，自建角色变回「没有立绘」。
@@ -1874,7 +1890,7 @@ fn dsc_avatar_clear(id: String, variant: Option<String>) -> Result<AvatarView, S
     } else {
         avatar::clear_variant(&id, v.trim())?;
     }
-    Ok(avatar_view(&id, avatar::DEFAULT_VARIANT))
+    Ok(avatar_view(&id, avatar::DEFAULT_VARIANT, true))
 }
 
 /// 一个表情格子的状态（设置界面画「表情格子」用）—— **只回元数据，不带图**。
@@ -1974,12 +1990,21 @@ fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
     } else {
         character.clone()
     };
-    let view = avatar_view(&avatar_id, &variant);
+    // 【先问"用哪张"，再决定要不要把图读进来】`key` 只用得到 id / 实际变体 / mtime ——
+    // 全是 stat 能拿到的。而 `avatar_view(want_data = true)` 要把 ~2 MB 的立绘读进来再
+    // base64 成 2.7 MB 的字符串，**桌宠绝大多数时候拿到就丢**（手上那张没变）。
+    // 先把 key 算出来判掉"没变"，那一趟就只剩几个 stat（实测从 48 ms 降到个位数）。
+    let picked = avatar::which(&avatar_id, &variant);
+    let (source, actual) = match picked {
+        Some((s, a)) => (s.to_string(), a),
+        None => ("none".to_string(), String::new()),
+    };
+    let id_s = avatar::sanitize(&avatar_id);
     // 立绘的"版本号"：用户传的图会变（换图、删图），内置图不会 —— 用文件 mtime 当版本。
     // 页面把它和 id/变体一起回传，一样就不必再过一次 IPC：一张 1280×1920 的 PNG
     // base64 有 1MB 上下，每分钟搬一次纯属浪费。
-    let stamp = if view.source == "user" {
-        std::fs::metadata(avatar::variant_path(&view.id, &view.variant))
+    let stamp = if source == "user" {
+        std::fs::metadata(avatar::variant_path(&id_s, &actual))
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -1988,8 +2013,9 @@ fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
     } else {
         0
     };
-    let key = format!("{}|{}|{}", view.id, view.variant, stamp);
+    let key = format!("{}|{}|{}", id_s, actual, stamp);
     let same = have.as_deref().map(str::trim) == Some(key.as_str());
+    let view = avatar_view(&avatar_id, &variant, !same);
     let name = personas::effective_persona(cfg.active_persona.as_deref())
         .map(|p| p.name)
         .unwrap_or_default();

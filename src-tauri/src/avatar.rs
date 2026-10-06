@@ -128,38 +128,77 @@ pub fn has_user(id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 读一张立绘（带表情变体），返回 `(字节, 来源, 实际用的变体)`。
+/// 这一趟会用哪张图：`(来源, 实际用的变体)`。**只 stat，一个字节都不读。**
+///
+/// 【为什么要单开一条】桌宠每 60 秒自己拉一次状态，壳里 19 处 `push_config` 又各会 ping
+/// 一次，而绝大多数时候是"手上那张没变"—— 那一趟根本不需要图。可原来的写法是**先把图
+/// 读进来再问要不要**：读 ~2 MB、base64 成 2.7 MB 的 dataURL，然后当场丢掉。实测这条
+/// 白走的路要 **48 ms**，而 `dsc_pet_state` 是**同步命令**（占着主线程），debug 构建下更明显。
+///
+/// 【它和 read_variant 的关系】那条现在**就是**先调这条问"用哪张"、再去读字节 ——
+/// 回退顺序只有这一份，改这里不会跟它走散（`which_and_read_agree` 那条单测守着）。
 ///
 /// 回退顺序：**用户的该变体 → 用户的单图 → 内置同变体 → 内置 neutral**。
-///
-/// 【为什么这么排】用户自己传的永远优先（他可能只传了一张单图，那所有表情都用它）；
-/// 用户那边没有才落到内置；内置也没有这个变体（素材还没生成齐）就退到 neutral ——
-/// 于是"只画了 neutral + happy 两张"也能正常跑，不会出现空白立绘。
-pub fn read_variant(id: &str, variant: &str) -> Option<(Vec<u8>, &'static str, String)> {
+pub fn which(id: &str, variant: &str) -> Option<(&'static str, String)> {
     let v = if is_variant(variant) {
         variant
     } else {
         DEFAULT_VARIANT
     };
-    if let Ok(bytes) = std::fs::read(variant_path(id, v)) {
-        if !bytes.is_empty() {
-            return Some((bytes, "user", v.to_string()));
-        }
+    if has_variant(id, v) {
+        return Some(("user", v.to_string()));
     }
-    if let Ok(bytes) = std::fs::read(path_of(id)) {
-        if !bytes.is_empty() {
-            return Some((bytes, "user", "single".to_string()));
-        }
+    if has_user(id) {
+        return Some(("user", "single".to_string()));
     }
     if is_builtin(id) {
-        if let Some(b) = builtin_png(v) {
-            return Some((b.to_vec(), "builtin", v.to_string()));
+        if builtin_png(v).is_some() {
+            return Some(("builtin", v.to_string()));
         }
-        if let Some(b) = builtin_png(DEFAULT_VARIANT) {
-            return Some((b.to_vec(), "builtin", DEFAULT_VARIANT.to_string()));
+        if builtin_png(DEFAULT_VARIANT).is_some() {
+            return Some(("builtin", DEFAULT_VARIANT.to_string()));
         }
     }
     None
+}
+
+/// 只读 PNG 头那 24 字节量宽高 —— 给"手上那张没变"那条路用，别为了两个数字把 2 MB 搬进来。
+pub fn size_of(id: &str, source: &str, actual: &str) -> (u32, u32) {
+    if source == "builtin" {
+        return builtin_png(actual).map(png_size).unwrap_or((0, 0));
+    }
+    let p = if actual == "single" {
+        path_of(id)
+    } else {
+        variant_path(id, actual)
+    };
+    let mut head = [0u8; 24];
+    match std::fs::File::open(&p).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head)) {
+        Ok(()) => png_size(&head),
+        Err(_) => (0, 0),
+    }
+}
+
+/// 读一张立绘（带表情变体），返回 `(字节, 来源, 实际用的变体)`。
+///
+/// 回退顺序见 `which`（这里只是照着它的结论去取字节，顺序不在两处各写一遍）。
+///
+/// 【为什么这么排】用户自己传的永远优先（他可能只传了一张单图，那所有表情都用它）；
+/// 用户那边没有才落到内置；内置也没有这个变体（素材还没生成齐）就退到 neutral ——
+/// 于是"只画了 neutral + happy 两张"也能正常跑，不会出现空白立绘。
+pub fn read_variant(id: &str, variant: &str) -> Option<(Vec<u8>, &'static str, String)> {
+    let (source, actual) = which(id, variant)?;
+    let bytes = if source == "builtin" {
+        builtin_png(&actual)?.to_vec()
+    } else if actual == "single" {
+        std::fs::read(path_of(id)).ok()?
+    } else {
+        std::fs::read(variant_path(id, &actual)).ok()?
+    };
+    if bytes.is_empty() {
+        return None;
+    }
+    Some((bytes, source, actual))
 }
 
 /// 落盘一张用户上传的单图（临时文件 + rename，原子替换）。
@@ -390,6 +429,42 @@ mod tests {
     fn variant_path_is_sanitized() {
         assert!(variant_path("luna", "../../x").to_string_lossy().contains("luna-"));
         assert!(variant_path("a/b", "happy").to_string_lossy().ends_with("a-b-happy.png"));
+    }
+
+    /// `which`（只 stat）和 `read_variant`（真读）必须永远指向同一张、同一个变体名。
+    ///
+    /// 【为什么这条测试必须存在】这两条路是"回退顺序"的两半：`which` 决定用哪张、
+    /// `read_variant` 照着去取字节。顺序一旦在某一半里被改歪，症状是**桌宠说变了、
+    /// 图却没换**（或者反过来），而且只在有用户自定义立绘的机器上才现形。
+    #[test]
+    fn which_and_read_agree() {
+        for v in VARIANTS {
+            let w = which(BUILTIN_ID, v);
+            let r = read_variant(BUILTIN_ID, v);
+            assert_eq!(
+                w.as_ref().map(|x| (x.0, x.1.clone())),
+                r.as_ref().map(|x| (x.1, x.2.clone())),
+                "内置角色的 {v}：which 和 read_variant 说的不是同一张"
+            );
+        }
+        // 认不出的变体名要落到 neutral，而不是"没有图"
+        assert_eq!(
+            which(BUILTIN_ID, "根本没这个变体").map(|x| x.1),
+            Some(DEFAULT_VARIANT.to_string())
+        );
+        assert_eq!(
+            read_variant(BUILTIN_ID, "根本没这个变体").map(|x| x.2),
+            Some(DEFAULT_VARIANT.to_string())
+        );
+    }
+
+    /// 内置素材的宽高必须能**不读全文**量出来（`size_of` 就是给那条快路用的）。
+    #[test]
+    fn size_of_matches_png_size_on_builtin() {
+        let full = builtin_png(DEFAULT_VARIANT).expect("内置素材里必须有 neutral");
+        let want = png_size(full);
+        assert_ne!(want, (0, 0), "内置 neutral 应该量得出尺寸");
+        assert_eq!(size_of(BUILTIN_ID, "builtin", DEFAULT_VARIANT), want);
     }
 
     #[test]

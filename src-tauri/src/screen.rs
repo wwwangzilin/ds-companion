@@ -322,9 +322,7 @@ pub fn local_line(subject: &str) -> String {    const TPL: &[&str] = &[
         "主人看「{}」看得好认真",
         "这个「{}」，我看见了",
     ];
-    let h = subject
-        .bytes()
-        .fold(2166136261u32, |a, b| (a ^ b as u32).wrapping_mul(16777619));
+    let h = hash32(subject);
     TPL[(h as usize) % TPL.len()].replace("{}", subject)
 }
 
@@ -542,38 +540,152 @@ pub fn see_prev() -> String {
         .unwrap_or_default()
 }
 
-/// 从她「亲眼看」回来的那段里挑出能当气泡宾语的那一句。
+/// 气泡宾语取自哪一行 —— 决定套哪一套模板（"一个东西"和"一件事"的说法不一样）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SubjectKind {
+    /// 「重点：…」——通常是一串标识符，是个"东西"
+    Focus,
+    /// 「在做什么：…」——一整句话，是"一件事"
+    Doing,
+    /// 「变化：…」——同上，而且天然是新鲜的
+    Change,
+}
+
+/// FNV-1a 32。两个模板表都用它挑模板 —— 抽出来是为了别在两处各写一遍。
+fn hash32(s: &str) -> u32 {
+    s.bytes()
+        .fold(2166136261u32, |a, b| (a ^ b as u32).wrapping_mul(16777619))
+}
+
+/// 把开头的"他/她……"换成"你……"。
 ///
-/// 【为什么优先用它】本地 OCR 挑出来的主题可能是乱的（偏旁碎片：`讠殳置`），而这段是
-/// 模型亲眼看过的 —— 约定的格式是两行（`在做什么：…` / `重点：…`），**重点那行最好用**。
-/// 格式没照做时退回第一行，都比 OCR 挑的准。
-fn subject_from_see(see: &str) -> Option<String> {
-    let mut first: Option<String> = None;
+/// 【为什么】这句话是说给主人听的，而模型是按"第三人称观察"写的（`他正在查看 A 窗口`）。
+/// 原样念出来就成了"他在看……"，可屏幕前就他一个人。
+fn second_person(s: &str) -> String {
+    let mut cs = s.chars();
+    match cs.next() {
+        Some('他') | Some('她') => format!("你{}", cs.as_str().trim_start()),
+        _ => s.to_string(),
+    }
+}
+
+/// 从她「亲眼看」回来的那段里挑出**能当气泡宾语的几句**，按"最该先说"排序。
+///
+/// 【为什么是几句而不是一句】原来只返回「重点」那一行 —— 而**重点恰恰是整段里最不变的**：
+/// 同一块屏看十遍，`在做什么` 和 `变化` 每次都不同，重点却一直是 `release code 7788`。
+/// 于是一轮一句、句句逐字相同。实测日志里 12 次 SEE 有 6 次是同一句
+/// （`主人居然在看「release code 7788」`）。所以这里把三行都交出去，由 `pick_line`
+/// 挑"和上一句不一样的那句"。
+///
+/// 【为什么重点仍排第一】它最具体（"她在看这个"），新鲜的时候是最好的一句；撞了才往后让。
+/// 格式没照做（模型没写那三个前缀）时退回第一行 —— 那也比 OCR 挑的准。
+fn subject_candidates(see: &str) -> Vec<(SubjectKind, String)> {
+    let mut focus: Option<String> = None;
+    let mut doing: Option<String> = None;
+    let mut change: Option<String> = None;
     for line in see.lines() {
         let l = line.trim();
         if l.is_empty() {
             continue;
         }
-        for pre in ["重点：", "重点:", "重点 ", "重点"] {
-            if let Some(rest) = l.strip_prefix(pre) {
-                let r = rest.trim().trim_start_matches(['：', ':']).trim();
-                if !r.is_empty() {
-                    return Some(clip_chars(r, SUBJECT_CHARS));
+        if focus.is_none() {
+            for pre in ["重点：", "重点:", "重点 ", "重点"] {
+                if let Some(rest) = l.strip_prefix(pre) {
+                    let r = rest.trim().trim_start_matches(['：', ':']).trim();
+                    if !r.is_empty() {
+                        focus = Some(clip_chars(r, SUBJECT_CHARS));
+                    }
+                    break;
                 }
             }
         }
-        if first.is_none() {
-            let l = l
+        if change.is_none() {
+            if let Some(rest) = l.strip_prefix("变化：").or_else(|| l.strip_prefix("变化:")) {
+                let r = rest.trim();
+                if !r.is_empty() {
+                    change = Some(clip_chars(&second_person(r), SUBJECT_CHARS));
+                }
+            }
+        }
+        // 「在做什么」那行；模型没照格式来时它就是整段的第一行。
+        // 但别把 重点/变化 那两行又当成"在做什么"。
+        if doing.is_none() && !l.starts_with("重点") && !l.starts_with("变化") {
+            let r = l
                 .strip_prefix("在做什么：")
                 .or_else(|| l.strip_prefix("在做什么:"))
                 .unwrap_or(l)
                 .trim();
-            if !l.is_empty() {
-                first = Some(l.to_string());
+            if !r.is_empty() {
+                doing = Some(clip_chars(&second_person(r), SUBJECT_CHARS));
             }
         }
     }
-    first.filter(|s| s.chars().count() >= 2).map(|s| clip_chars(&s, SUBJECT_CHARS))
+    let mut out = Vec::new();
+    for (kind, got) in [
+        (SubjectKind::Focus, focus),
+        (SubjectKind::Doing, doing),
+        (SubjectKind::Change, change),
+    ] {
+        if let Some(s) = got {
+            if s.chars().count() >= 2 {
+                out.push((kind, s));
+            }
+        }
+    }
+    out
+}
+
+/// 「一件事」那套模板 —— 宾语本身是一句话，再套引号就成了「在看「他正在查看…」」。
+const TPL_DOING: &[&str] = &[
+    "{}……本小姐看着呢",
+    "{}。嗯，看见了",
+    "{}——是这样吧",
+    "{}。别以为我没看见",
+    "{}，哼",
+    "{}，要本小姐搭把手吗",
+];
+
+/// 按宾语的种类套模板。
+pub fn local_line_kind(kind: SubjectKind, subject: &str) -> String {
+    if kind == SubjectKind::Focus {
+        return local_line(subject);
+    }
+    TPL_DOING[(hash32(subject) as usize) % TPL_DOING.len()].replace("{}", subject)
+}
+
+/// 这一眼该不该说话、说什么 —— 纯函数。
+///
+/// 规则（按优先级）：
+///   ① 整段和上一眼**一模一样** → 闭嘴。同一回事再冒一句只会是"换个说法的同一件事"。
+///   ② 按 重点 → 在做什么 → 变化 的顺序，找**这一类的主语和上一眼不同**的那一类来说。
+///   ③ 全都跟上一眼一样 → 没什么新鲜的，闭嘴（桌宠有 5 分钟保鲜期，旧那句会自己收掉）。
+///
+/// 【为什么判"同类主语变没变"而不是"跟上一句不同"】只比上一句会弹出 A→B→A→B 的循环：
+/// 重点没动、于是退到"在做什么"说了 B；下一眼再比，重点那句又"和上一句不同"了，于是弹回 A。
+/// 实测日志上这么改只能把逐字重复从 8 次压到 6 次 —— 全是这种二循环。按"这一类变了没"判
+/// 才是"她只在有新情况时开口"。
+///
+/// 【为什么重点排第一】它最具体；它不动了才轮到"你在做什么"。
+///
+/// 【为什么单独提成纯函数】它是"复读"这个 bug 的正解所在，必须能直接测 ——
+/// 走 `note_seen` 测会碰全局 `STATE`，而 cargo 是并行跑测试的，断言会飘。
+fn pick_line(see: &str, prev_see: &str, prev_say: &str) -> Option<String> {
+    if see == prev_see {
+        return None;
+    }
+    let now = subject_candidates(see);
+    let before = subject_candidates(prev_see);
+    for (kind, subj) in &now {
+        // 这一类的主语上一眼就是它 → 没新鲜的可说
+        if before.iter().any(|(k, s)| k == kind && s == subj) {
+            continue;
+        }
+        let line = local_line_kind(*kind, subj);
+        if line != prev_say {
+            return Some(line);
+        }
+    }
+    None
 }
 
 /// 页面看完回来交作业：她**亲眼**看到的那段（"在做什么 + 重点在哪"）。
@@ -590,6 +702,8 @@ pub fn note_seen(text: &str, size: &str) -> bool {
     let mut says = false;
     with_state(|s| {
         let snap = s.snap.get_or_insert_with(Snapshot::default);
+        // 上一眼看到的那段（要在覆盖它之前留一手 —— "同一段看第二遍"就是靠它判的）
+        let prev_see = snap.see.clone();
         snap.see = clip_chars(t, SEE_CHARS);
         snap.see_at = crate::now_ms();
         let now_text = snap.text.clone();
@@ -597,18 +711,16 @@ pub fn note_seen(text: &str, size: &str) -> bool {
         if !size.is_empty() {
             snap.see_size = size.to_string();
         }
-        if let Some(subj) = subject_from_see(&snap.see) {
-            let line = local_line(&subj);
-            if line != snap.say {
-                snap.say = line;
-                snap.say_at = crate::now_ms();
-                says = true;
-            }
+        // 【挑一句和上一句不一样的】「重点」常常只是个标识符，屏幕在动它却不动 ——
+        // 只认它就成了复读机。另外，整段和上一眼一模一样时也不吭声（同一回事没必要重说）。
+        if let Some(line) = pick_line(&snap.see, &prev_see, &snap.say) {
+            snap.say = line;
+            snap.say_at = crate::now_ms();
+            says = true;
         }
     });
     says
 }
-
 /// **只会出现在部件里的独用字** —— 正常中文里不会单独用它们。
 ///
 /// 【为什么需要这张表】小字号的中文，Windows OCR 经常**把字拆成部件**。实测样本
@@ -712,8 +824,15 @@ pub fn tick() -> bool {
                     meta.get("w").cloned().unwrap_or_default(),
                     meta.get("h").cloned().unwrap_or_default()
                 );
-                snap.say = say;
-                snap.say_at = say_at;
+                // 【开着"亲眼看"时这里一个字都别动】那句话归 `note_seen` 管（她看完回来才算数）。
+                // 原来这里一律 `snap.say = say`，而 see 模式下 `say_for` 恒返回空串 —— 于是
+                // 每分钟把上一次那句**清掉**：气泡跟着闪没一次；更要命的是 `note_seen` 里
+                // "别重复"那道闸门（`line != snap.say`）就此形同虚设，每次都判成"换了新的一句"
+                // —— 日志里那句 `· 顺手换了她那句` 就是这么来的。★复读的一半根因在这★
+                if !cfg.screen_see {
+                    snap.say = say;
+                    snap.say_at = say_at;
+                }
                 // 留一张图等页面来取（她"亲眼看"那条路）。开关关着就不造 —— 造了也没人要，
                 // 白花缩图和编码那几十毫秒。
                 if cfg.screen_see {
@@ -1147,17 +1266,70 @@ mod tests {
         assert!(t.contains("base64"), "{t}");
     }
 
-    /// 气泡那句取的是她"亲眼看"回来的**重点**那行
+    /// 气泡候选：三行都在、按"最该先说"排，第三人称换成人称"你"
     #[test]
-    fn subject_from_see_prefers_the_focus_line() {
-        let see = "在做什么：正在查看一个验证窗口。\n重点：release code 7788";
-        assert_eq!(subject_from_see(see).as_deref(), Some("release code 7788"));
-        // 模型没照格式来 → 退回第一行，并且把"在做什么："这个前缀去掉
-        assert_eq!(subject_from_see("在做什么：在看文档").as_deref(), Some("在看文档"));
-        assert_eq!(subject_from_see("随便写了一句").as_deref(), Some("随便写了一句"));
+    fn subject_candidates_keep_all_three_lines() {
+        let see = "在做什么：他正在查看 A 窗口。\n重点：release code 7788\n变化：他从 A 切到了 B";
+        let c = subject_candidates(see);
+        assert_eq!(c.len(), 3, "三行都该当候选：{c:?}");
+        assert_eq!(c[0].0, SubjectKind::Focus);
+        assert_eq!(c[0].1, "release code 7788");
+        assert_eq!(c[1].0, SubjectKind::Doing);
+        assert!(c[1].1.starts_with("你正在查看"), "第三人称要换成你：{}", c[1].1);
+        assert_eq!(c[2].0, SubjectKind::Change);
+        assert!(c[2].1.starts_with("你从"), "第三人称要换成你：{}", c[2].1);
+
+        // 模型没照格式来 → 退回第一行，并把"在做什么："这个前缀去掉
+        let c2 = subject_candidates("在做什么：在看文档");
+        assert_eq!(c2.len(), 1);
+        assert_eq!(c2[0].0, SubjectKind::Doing);
+        assert_eq!(c2[0].1, "在看文档");
+        assert_eq!(subject_candidates("随便写了一句")[0].1, "随便写了一句");
         // 空的 / 只有一个字的 → 没有主题，别冒泡
-        assert!(subject_from_see("").is_none());
-        assert!(subject_from_see("重").is_none());
+        assert!(subject_candidates("").is_empty());
+        assert!(subject_candidates("重").is_empty());
+    }
+
+    /// ★复读的根治★「重点」没变时必须改用「在做什么」那行，绝不能逐字重复上一句
+    ///
+    /// 【这是主人报的那个 bug】实测日志里 12 次 SEE 有 6 次是同一句
+    /// `主人居然在看「release code 7788」` —— 因为只认「重点」，而重点是最不变的那行。
+    #[test]
+    fn pick_line_does_not_repeat_itself() {
+        let a = "在做什么：他正在查看 A 窗口。\n重点：release code 7788";
+        let first = pick_line(a, "", "").expect("第一次该有话说");
+        assert!(first.contains("release code 7788"), "第一次该用重点：{first}");
+
+        // 重点没变、在做什么变了 → 说"在做什么"那行
+        let b = "在做什么：他正在查看 B 窗口。\n重点：release code 7788";
+        let second = pick_line(b, a, &first).expect("重点没变也该换一句说");
+        assert!(second.contains("B 窗口"), "该退到「在做什么」那行：{second}");
+        assert_ne!(second, first);
+
+        // ★不能再弹回上一句★ 继续变下去就该继续说新情况，而不是 A→B→A→B 打转
+        let c = "在做什么：他正在查看 C 窗口。\n重点：release code 7788";
+        let third = pick_line(c, b, &second).expect("在做什么又变了，该说新的");
+        assert!(third.contains("C 窗口"), "{third}");
+        assert_ne!(third, second);
+        assert_ne!(third, first, "别弹回第一句");
+
+        // 重点变了 → 回头说重点（它排第一）
+        let d = "在做什么：他正在查看 C 窗口。\n重点：checksum D";
+        let fourth = pick_line(d, c, &third).expect("重点变了该说重点");
+        assert!(fourth.contains("checksum D"), "{fourth}");
+
+        // 同一段看第二遍 → 没什么可说的，返回 None（桌宠不会被叫醒）
+        assert_eq!(pick_line(d, d, &fourth), None);
+    }
+
+    /// 「一件事」那套模板不能带引号 —— 宾语本身就是一句话
+    #[test]
+    fn doing_lines_read_as_remarks_not_quotes() {
+        let line = local_line_kind(SubjectKind::Doing, "你正在查看 A 窗口。");
+        assert!(!line.contains('「'), "一句话不该套引号：{line}");
+        assert!(line.contains("你正在查看 A 窗口。"), "{line}");
+        // 同一个宾语必须稳定（不然"别重复"那道闸门会永远判成"变了"）
+        assert_eq!(line, local_line_kind(SubjectKind::Doing, "你正在查看 A 窗口。"));
     }
 
     /// 开着"亲眼看"时**不用 OCR 挑主题** —— 那正是乱码的来源
