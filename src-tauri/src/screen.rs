@@ -27,6 +27,9 @@ pub const MIN_CHARS: u32 = 60;
 pub const MAX_CHARS: u32 = 800;
 /// 她"亲眼看"回来交的那段最多留多少字 —— 模型输出长度不可控，而它要进下一轮上下文
 pub const SEE_CHARS: usize = 300;
+/// 每轮交给她几张（最近 N 张）。1 = 只看最新那张；上限 4（再多上传和解析就明显拖时间了）
+pub const MIN_BATCH: u32 = 1;
+pub const MAX_BATCH: u32 = 4;
 /// 后台每这么久醒一次看看该不该到点了（比最小间隔小，改了设置能较快生效）
 pub const TICK_SECS: u64 = 15;
 /// 子进程最多等这么久；超了就放弃这一次（下一次到点再来）
@@ -83,6 +86,9 @@ pub struct Shot {
     pub at: u64,
     /// 截的是哪块区域（"2880x1860"）
     pub size: String,
+    /// **自增序号** —— 页面按它缓存 `file_id`：每轮都发"最近 3 张"，其中重叠的那两张
+    /// 上次已经传过了，凭这个序号就能认出来、不用再传一遍。
+    pub seq: u64,
 }
 
 /// 上一次尝试的时间 + 最近一次结果。**只在内存里**：退出即散。
@@ -90,8 +96,15 @@ pub struct Shot {
 struct State {
     last_try: u64,
     snap: Option<Snapshot>,
-    /// 等着页面来取的那张图
-    shot: Option<Shot>,
+    /// **最近的几张截图**（滑动窗口，按时间正序）。
+    ///
+    /// 【为什么是窗口不是"一张"】主人要的是"每轮都带最近 3 张" —— 于是每张新图进来，
+    /// 就把最老的那张挤出去，交给页面的一直是"最近这一段过程"，而不是一张快照。
+    shots: Vec<Shot>,
+    /// 自增序号（每造一张 +1）
+    next_seq: u64,
+    /// 上一次交出去的窗口里**最新那张**的序号 —— 和现在一样就说明没有新图，不必再发
+    last_sent_seq: u64,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -429,21 +442,27 @@ fn parse_size(s: &str) -> (u32, u32) {
     }
 }
 
-/// 造一张"等她看"的图。`None` = 这次没图、或者**内容和上次给她看的一模一样**。
+/// 造一张图塞进滑动窗口。`keep` = 窗口最多留几张（= 每轮交出去几张）。
 ///
-/// 【为什么"内容没变就不造"】同一页盯半小时，OCR 出来的字一个不差 —— 那就没必要每 5 分钟
-/// 花 200 token 让她重看一张没变的图。指纹用**清洗后的 OCR 文本**，因为它是零成本的：
+/// 【为什么"内容没变就不造"】同一页盯半小时，OCR 出来的字一个不差 —— 那就没必要
+/// 每 5 分钟把几乎一样的一张图再交出去一次。指纹用**清洗后的 OCR 文本**，因为它是零成本的：
 /// 拿本地 OCR 当门铃、拿多模态当眼睛，这才是"OCR 当备份"的正确用法。
 ///
 /// 【注意别在 `with_state` 里调它】它内部会锁 `LAST_SHOT_FOR` —— 两把锁不是同一把，
-/// 这个函数自己是安全的；但它**返回**的东西要由调用方塞进 State，别写成嵌套的 with_state。
-fn shot_from(
+/// 这个函数自己是安全的；但调用方拿到 `&mut State` 时要小心别写成嵌套的 `with_state`。
+/// 【为什么参数是两个字段而不是整个 `State`】调用点那边 `snap` 已经借着 `s.snap` 了 ——
+/// 传 `&mut State` 会撞上"同一时间只能有一个可变借用"。拆成 `shots` 和 `next_seq` 两个
+/// **不相交的字段**就能同时借（Rust 允许 disjoint field borrow），调用点也不用把逻辑绕开。
+fn push_shot(
+    shots: &mut Vec<Shot>,
+    next_seq: &mut u64,
     meta: &std::collections::HashMap<String, String>,
     text: &str,
-) -> Option<Shot> {
+    keep: usize,
+) {
     let b64 = match meta.get("imgb64") {
-        Some(s) if !s.is_empty() => s.clone(),
-        _ => return None,
+        Some(x) if !x.is_empty() => x.clone(),
+        _ => return,
     };
     {
         let mut last = match LAST_SHOT_FOR.lock() {
@@ -451,12 +470,14 @@ fn shot_from(
             Err(p) => p.into_inner(),
         };
         if last.as_deref() == Some(text) {
-            return None;
+            return; // 这一屏和窗口里最后一张一模一样，没带来新信息
         }
         *last = Some(text.to_string());
     }
     let (w, h) = parse_size(meta.get("img").map(String::as_str).unwrap_or(""));
-    Some(Shot {
+    let seq = *next_seq;
+    *next_seq += 1;
+    shots.push(Shot {
         b64,
         w,
         h,
@@ -467,15 +488,55 @@ fn shot_from(
             meta.get("w").cloned().unwrap_or_default(),
             meta.get("h").cloned().unwrap_or_default()
         ),
+        seq,
+    });
+    // 窗口只留 `keep` 张：再来一张就把最老的挤出去
+    while shots.len() > keep.max(1) {
+        shots.remove(0);
+    }
+}
+
+/// 页面来取"这一轮该看的那几张"：**最近 batch 张**（按时间正序）。
+///
+/// 【没新图就不给】判据是"窗口里最新那张的序号和上次交出去的一不一样" —— 一样就说明
+/// 这一轮没有任何新截图（他还在看同一页），那就别再发一次同样的请求。
+/// 所以实际频率 = 截图频率 × "内容真的变了"的比例，而不是每轮对话都发。
+pub fn take_shots() -> Vec<Shot> {
+    let cfg = crate::config::load();
+    if !cfg.screen_watch || !cfg.screen_see {
+        return Vec::new();
+    }
+    let batch = cfg.screen_see_batch.clamp(MIN_BATCH, MAX_BATCH) as usize;
+    with_state(|s| {
+        let newest = s.shots.last().map(|x| x.seq).unwrap_or(0);
+        if newest == 0 || newest == s.last_sent_seq {
+            return Vec::new();
+        }
+        s.last_sent_seq = newest;
+        // 刚开机只攒到一两张时也照发（有几张发几张），别让她干等十几分钟
+        s.shots.clone()
     })
 }
 
-/// 页面来取"最近一张等她看的图"。**取走即清** —— 同一张图不该让页面看两遍。
-pub fn take_shot() -> Option<Shot> {
-    if !crate::config::load().screen_watch {
-        return None;
+/// 上一轮她"亲眼看"回来的那句"在做什么" —— 下一轮提示词里给她，用来接上下文
+/// （"刚才你在弄那个警告，现在是去改配置了？"）。
+pub fn see_prev() -> String {
+    let snap = snapshot();
+    if snap.see.is_empty() || snap.see_for != snap.text {
+        return String::new();
     }
-    with_state(|s| s.shot.take())
+    snap.see
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+        .map(|l| {
+            l.strip_prefix("在做什么：")
+                .or_else(|| l.strip_prefix("在做什么:"))
+                .unwrap_or(l)
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 /// 从她「亲眼看」回来的那段里挑出能当气泡宾语的那一句。
@@ -653,9 +714,8 @@ pub fn tick() -> bool {
                 // 留一张图等页面来取（她"亲眼看"那条路）。开关关着就不造 —— 造了也没人要，
                 // 白花缩图和编码那几十毫秒。
                 if cfg.screen_see {
-                    if let Some(shot) = shot_from(&meta, &text) {
-                        s.shot = Some(shot);
-                    }
+                    let keep = cfg.screen_see_batch.clamp(MIN_BATCH, MAX_BATCH) as usize;
+                    push_shot(&mut s.shots, &mut s.next_seq, &meta, &text, keep);
                 }
                 snap.text = text;
             }
@@ -723,9 +783,8 @@ pub fn look_now() -> Snapshot {
                 snap.say = say;
                 snap.say_at = say_at;
                 if cfg.screen_see {
-                    if let Some(shot) = shot_from(&meta, &text) {
-                        s.shot = Some(shot);
-                    }
+                    let keep = cfg.screen_see_batch.clamp(MIN_BATCH, MAX_BATCH) as usize;
+                    push_shot(&mut s.shots, &mut s.next_seq, &meta, &text, keep);
                 }
                 snap.text = text;
                 snap.mode = meta.get("mode").cloned().unwrap_or_default();
@@ -798,8 +857,12 @@ pub fn forget_last_injected() {
     if let Ok(mut g) = LAST_SHOT_FOR.lock() {
         *g = None;
     }
-    // 手上还攥着一张没人要的图也一起丢掉（关掉之后再取走它没有意义）
-    with_state(|s| s.shot = None);
+    // 手上还攥着的那几张（还没交出去的）也一起丢掉 —— 关掉之后再取走它们没有意义。
+    // 【`next_seq` 故意不重置】序号只要单调就行；回退会让页面那头的 file_id 缓存串号。
+    with_state(|s| {
+        s.shots.clear();
+        s.last_sent_seq = 0;
+    });
 }
 
 #[cfg(test)]
@@ -999,12 +1062,12 @@ mod tests {
         assert_eq!(parse_size("axb"), (0, 0));
     }
 
-    /// ★同一屏内容只造一次图★ —— 否则每 5 分钟花 200 token 重看一张没变的图。
+    /// ★滑动窗口：同一屏只进一次；满了就把最老的挤出去★
     ///
-    /// 这个测试碰的是模块级的 `LAST_SHOT_FOR`（全局），所以两种情形必须在**同一个测试**
-    /// 里连着验，别拆成两个（拆开跑的顺序不确定，会互相污染）。
+    /// 这个测试碰的是模块级的 `LAST_SHOT_FOR`（全局），所以整个流程必须在**同一个测试**
+    /// 里连着走，别拆开（拆开跑的顺序不确定，会互相污染）。
     #[test]
-    fn shot_is_built_once_per_screen_content() {
+    fn shots_window_keeps_recent_and_skips_unchanged() {
         let mut meta = std::collections::HashMap::new();
         meta.insert("imgb64".to_string(), "QUJD".to_string());
         meta.insert("img".to_string(), "512x331".to_string());
@@ -1012,20 +1075,36 @@ mod tests {
         meta.insert("h".to_string(), "1860".to_string());
         meta.insert("cursor".to_string(), "1".to_string());
 
-        let first = shot_from(&meta, "唯一的第一段屏幕内容");
-        let shot = first.expect("第一次该造出图来");
-        assert_eq!(shot.b64, "QUJD");
-        assert_eq!((shot.w, shot.h), (512, 331));
-        assert!(shot.cursor, "cursor=1 要如实传下去");
-        assert_eq!(shot.size, "2880x1860");
-        assert!(shot.at > 0);
+        let mut shots: Vec<Shot> = Vec::new();
+        let mut seq = 0u64;
 
-        // ★同样的内容再来一次：不造★
-        assert!(shot_from(&meta, "唯一的第一段屏幕内容").is_none());
-        // 内容变了才再造
-        assert!(shot_from(&meta, "换了一屏完全不同的内容").is_some());
-        // 没有图数据（脚本没能编码出来）→ 什么都不造
-        assert!(shot_from(&std::collections::HashMap::new(), "又换了一屏").is_none());
+        push_shot(&mut shots, &mut seq, &meta, "第一段屏幕内容（唯一的一句）", 3);
+        assert_eq!(shots.len(), 1, "第一次该造出图来");
+        assert_eq!(shots[0].seq, 0, "序号从 0 开始，页面靠它复用 file_id");
+        assert_eq!((shots[0].w, shots[0].h), (512, 331));
+        assert!(shots[0].cursor, "cursor=1 要如实传下去");
+        assert_eq!(shots[0].size, "2880x1860");
+
+        // ★同样的内容再来一次：不进来★（这是省钱的闸 —— 盯着同一页不该反复花额度）
+        push_shot(&mut shots, &mut seq, &meta, "第一段屏幕内容（唯一的一句）", 3);
+        assert_eq!(shots.len(), 1, "内容没变不该再进一张");
+
+        // 换了一屏 → 第二张进来
+        push_shot(&mut shots, &mut seq, &meta, "第二段：完全不同的内容", 3);
+        assert_eq!(shots.len(), 2);
+
+        // 再来两张：窗口只留最近 3 张，序号仍然连续
+        push_shot(&mut shots, &mut seq, &meta, "第三段内容", 3);
+        push_shot(&mut shots, &mut seq, &meta, "第四段内容", 3);
+        assert_eq!(shots.len(), 3, "窗口上限是 3");
+        assert_eq!(shots[0].seq, 1, "最老那张（seq=0）被挤出去了");
+        assert_eq!(shots[2].seq, 3);
+
+        // 脚本没能编码出图（没有 imgb64）→ 什么都不该进来
+        let empty = std::collections::HashMap::new();
+        push_shot(&mut shots, &mut seq, &empty, "第五段内容", 3);
+        assert_eq!(shots.len(), 3, "没图数据就别占位置");
+        assert_eq!(seq, 4, "没造图就不该推进序号");
     }
 
     /// ★这是主人报的"她有时候说的是乱码"那个 bug★

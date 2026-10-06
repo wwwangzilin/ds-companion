@@ -660,6 +660,7 @@ async function refreshScreen() {
   $('sc-chars').style.opacity = on ? '1' : '0.45';
   $('sc-say').style.opacity = on ? '1' : '0.45';
   $('sc-see').style.opacity = on ? '1' : '0.45';
+  $('sc-batch').style.opacity = on ? '1' : '0.45';
   placePill(
     'sc-every-pill',
     document.querySelector(`#sc-every button[data-v="${c.screenEveryMinutes}"]`),
@@ -675,6 +676,10 @@ async function refreshScreen() {
   placePill(
     'sc-see-pill',
     document.querySelector(`#sc-see button[data-v="${c.screenSee ? '1' : '0'}"]`),
+  );
+  placePill(
+    'sc-batch-pill',
+    document.querySelector(`#sc-batch button[data-v="${c.screenSeeBatch || 3}"]`),
   );
 
   let s = null;
@@ -802,6 +807,19 @@ $('sc-see').addEventListener('click', async (e) => {
   try {
     placePill('sc-see-pill', b);
     await patchCfg({ screenSee: b.dataset.v === '1' });
+  } catch (err) {
+    fail(err);
+  }
+  await refreshScreen().catch(fail);
+});
+
+// 「每次看几张」：1 = 只看最新快照；3 = 带上前面两张，能看出过程（token 也 ×3）
+$('sc-batch').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-v]');
+  if (!b) return;
+  try {
+    placePill('sc-batch-pill', b);
+    await patchCfg({ screenSeeBatch: Number(b.dataset.v) });
   } catch (err) {
     fail(err);
   }

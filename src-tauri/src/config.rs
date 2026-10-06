@@ -163,6 +163,19 @@ pub struct AppConfig {
     /// 关掉这一条 = 退回纯 OCR 那条老路（省钱，但会念出偏旁碎片）。
     #[serde(default = "default_true")]
     pub screen_see: bool,
+    /// **每次交给她看几张截图**（最近 N 张，默认 3）。1 = 只看最新的那一张。
+    ///
+    /// 【主人 2026-10-06 明确要的是哪种】不是"攒够 3 张才发一次"，而是**每次都发最近 3 张**：
+    /// 每个请求里都带着一小段过程（最新那张 + 前两张），她因此能说出"他换过什么"。
+    ///
+    /// 【代价是 token 不是时间】每张 ≈ 200，一次 3 张 = 600；截图间隔 5 分钟的话上限约
+    /// 7200/小时（单张那条路是 2400）。**内容没变的那张根本不会进窗口** —— 所以静坐着
+    /// 看同一页时一次都不发，实际花多少取决于他切窗口的频繁程度。
+    ///
+    /// 【重叠的那两张不会重复上传】每张图带一个自增序号，页面按序号缓存 `file_id`，
+    /// 只有新的那张要真上传 —— 所以一次请求的延迟跟单张差不多。
+    #[serde(default = "default_see_batch")]
+    pub screen_see_batch: u32,
     /// 虚拟身体层（困倦/体力/饿/心跳）注入进【状态】块
     #[serde(default = "default_true")]
     pub body_enabled: bool,
@@ -249,6 +262,11 @@ fn default_screen_chars() -> u32 {
 /// 看见了就说一句（本地拼，零成本）
 fn default_screen_say() -> String {
     "local".into()
+}
+
+/// **每次交给她看几张**（最近 N 张）—— 默认 3
+fn default_see_batch() -> u32 {
+    3
 }
 
 fn default_tool_cap() -> u32 {
@@ -359,6 +377,7 @@ impl Default for AppConfig {
             screen_chars: default_screen_chars(),
             screen_say_mode: default_screen_say(),
             screen_see: true,
+            screen_see_batch: default_see_batch(),
             body_enabled: true,
             user_state_enabled: true,
             self_review_mode: default_review_mode(),
@@ -680,6 +699,8 @@ mod tests {
         // 本地 OCR 会把小字号中文拆成偏旁（「设置」→「讠殳置」），那些碎片滤不掉、
         // 念出来就是乱码。所以默认不走 OCR 出文字，它只在内部当"这一屏变了没"的门铃。
         assert!(d.screen_see, "默认就该让她亲眼看 —— OCR 挑出来的小字是偏旁碎片");
+        // ★每次带最近 3 张（主人 2026-10-06 明确要的：不是攒够再发，是每次都发 3 张）★
+        assert_eq!(d.screen_see_batch, 3);
     }
 
     /// 端到端：一份坏 config.json 必须被隔离成 `.bad-*`，而不是被下一次保存悄悄覆盖。

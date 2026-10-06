@@ -672,6 +672,15 @@
                   <button data-v="0">只认字</button>
                 </div>
               </div>
+              <div class="gate">
+                <span class="gate-label" title="每次把最近几张一起交给她看。1 张 = 只看最新的快照；3 张 = 带上前面两张，她因此能说出「你这几分钟从文档切到编辑器了」这种话。token 按张数算（每张约 200），所以 3 张比 1 张贵 3 倍 —— 但内容没变的截图根本不会进来，静坐着看同一页时一次都不发。重叠的那两张不会重复上传，所以延迟跟 1 张差不多。">每次看</span>
+                <div class="seg small" id="sc-batch">
+                  <span class="seg-pill" id="sc-batch-pill"></span>
+                  <button data-v="1">1 张</button>
+                  <button data-v="2">2 张</button>
+                  <button data-v="3">3 张</button>
+                </div>
+              </div>
             </div>
             <div class="row" style="display:flex;gap:8px;align-items:center">
               <code id="sc-now" style="flex:1 1 auto;min-width:0;padding:7px 10px;border-radius:6px;background:rgba(127,127,127,.14);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">还没有看过</code>

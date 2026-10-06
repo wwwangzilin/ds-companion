@@ -10,15 +10,25 @@
 # intended "focus". It checks whether the mouse ring + the prompt actually land her
 # attention in the right place instead of her just reading the biggest headline.
 #
+# TWO BOARDS: the label comes from the environment variable DSC_BOARD_TAG, so you can run
+# two boards with different content ("A" and "B") and alternate them as the foreground.
+# That is needed to verify "send the last 3 shots at once": the shell skips a capture whose
+# OCR text is identical to the previous one, so a single board would never fill the window.
+#
+# Why an env var and not a param: `powershell -File xxx.ps1 -Tag A` did not deliver the
+# value in practice (the window title came out empty). Start-Process children inherit the
+# environment as of launch time, so changing the variable between two launches works.
+#
 # Pure ASCII is a hard requirement here: PowerShell 5.1 decodes BOM-less files as GBK, and
 # a Chinese comment can mangle the parse (this project has hit it more than once).
 #
 # Run it in the background; it does not exit on its own:
-#   Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','.verify\see-target.ps1'
+#   $env:DSC_BOARD_TAG='A'; Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','.verify\see-target.ps1' -WindowStyle Minimized
+$boardTag = if ($env:DSC_BOARD_TAG) { $env:DSC_BOARD_TAG } else { 'A' }
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'DSC SEE VERIFY TARGET'
+$form.Text = "DSC SEE TARGET $boardTag"
 $form.ClientSize = New-Object System.Drawing.Size(900, 620)
 $form.StartPosition = 'CenterScreen'
 $form.BackColor = [System.Drawing.Color]::White
@@ -29,19 +39,19 @@ $form.Add_Paint({
     $g.Clear([System.Drawing.Color]::White)
 
     $f1 = New-Object System.Drawing.Font('Segoe UI', 40, [System.Drawing.FontStyle]::Bold)
-    $g.DrawString('VERIFY TARGET WINDOW', $f1, [System.Drawing.Brushes]::Black, 40, 36)
+    $g.DrawString("VERIFY TARGET $boardTag", $f1, [System.Drawing.Brushes]::Black, 40, 36)
 
     $f2 = New-Object System.Drawing.Font('Segoe UI', 18)
-    $g.DrawString('this window stands in for the real screen', $f2, [System.Drawing.Brushes]::DimGray, 40, 160)
+    $g.DrawString("this window stands in for the real screen (board $boardTag)", $f2, [System.Drawing.Brushes]::DimGray, 40, 160)
 
-    # The single most eye-catching line on this board: she is expected to quote it back.
-    # It sits near the vertical centre ON PURPOSE -- focus-window.ps1 parks the mouse in
-    # the middle of the window, and the ring it draws is the "focus" hint. First run had
-    # this line at y=250 and the ring landed on the line below it; she quoted *that* one,
-    # which was correct behaviour and a badly laid out board. Keep the focus line central.
+    # The line she is expected to quote back. It carries the board tag because when three
+    # shots go out at once, a line that looks IDENTICAL across all of them stops being
+    # "the most notable thing on this screen" -- the first run had a fixed `release code
+    # 7788` and she correctly picked `checksum A/B` instead (that one distinguished the
+    # boards). Keep the marker, vary the tag.
     $f3 = New-Object System.Drawing.Font('Consolas', 26, [System.Drawing.FontStyle]::Bold)
-    $g.DrawString('* release code 7788', $f3, [System.Drawing.Brushes]::DarkRed, 40, 288)
-    $g.DrawString('* checksum alpha-bravo', $f3, [System.Drawing.Brushes]::DarkSlateBlue, 40, 356)
+    $g.DrawString("* release code 7788-$boardTag", $f3, [System.Drawing.Brushes]::DarkRed, 40, 288)
+    $g.DrawString("* checksum $boardTag", $f3, [System.Drawing.Brushes]::DarkSlateBlue, 40, 356)
 
     $f4 = New-Object System.Drawing.Font('Segoe UI', 11)
     $g.DrawString('footer: nothing important down here, ignore this line', $f4, [System.Drawing.Brushes]::Gray, 40, 560)
@@ -76,6 +86,6 @@ $mt = [DscSee.Fg]::GetCurrentThreadId()
 [void][DscSee.Fg]::BringWindowToTop($h)
 $ok = [DscSee.Fg]::SetForegroundWindow($h)
 [void][DscSee.Fg]::AttachThreadInput($mt, $ft, $false)
-Write-Output "ready hwnd=$h fg=$ok pid=$PID"
+Write-Output "ready tag=$boardTag hwnd=$h fg=$ok pid=$PID"
 
 [System.Windows.Forms.Application]::Run($form)

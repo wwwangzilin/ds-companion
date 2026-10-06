@@ -1073,43 +1073,126 @@
    * 所以她自己看不出主人在看哪一块、只能瞎猜。壳在图上画了洋红色的圈 —— 不点明这一句，
    * 她可能把那圈当成屏幕内容的一部分。
    */
-  function seeShot(shot) {
-    var util = window.__DSC_DS_UTIL__;
-    if (!util || typeof util.seeImage !== 'function') {
-      return Promise.reject(new Error('deepseek-client 没加载'));
-    }
-    var prompt =
-      '这是主人电脑屏幕的截图。回答两件事，各占一行，不要客套、不要复述我这句话：\n' +
-      '第一行「在做什么」：他正在看什么、干什么，一句话。\n' +
-      '第二行「重点」：整屏最该注意的那一处，把那上面写的字照抄出来。\n' +
-      (shot.cursor
-        ? '图上那个洋红色的圈是他鼠标停的地方，重点优先看那里。\n'
-        : '（这张图上没有圈 —— 截图那一刻他的鼠标不在这个窗口里。）\n') +
-      '看不清就直说看不清，别猜。';
-    var bin = atob(String(shot.b64 || ''));
+  /** seq → 上传后的 file_id。滑动窗口和上一轮重叠的那几张凭它复用，不必重传。 */
+  var shotFileIds = {};
+
+  /** base64 → Blob（壳给的不带 data: 前缀，但容错一下） */
+  function b64ToBlob(b64) {
+    var s = String(b64 || '');
+    var comma = s.indexOf(',');
+    if (comma >= 0) s = s.slice(comma + 1);
+    var bin = atob(s);
     var bytes = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    var blob = new Blob([bytes], { type: 'image/png' });
-    var size = (shot.w || 0) + 'x' + (shot.h || 0);
-    // 验收要看的就是这几项：图多大、有没有圈、她回了什么。**不存图本身**
-    // （30KB 常驻内存不值得，要看得去账号里看那张图）。
+    return new Blob([bytes], { type: 'image/png' });
+  }
+
+  /**
+   * 提示词 —— **实测定下来的，别随手改**。
+   *
+   * 【第一版为什么不行】它问的是"这张图上写着什么？用一句话原样说出来" —— 她的回答永远是
+   * 5 个字，就是屏幕上最大的那个标题（主人原话：「只说个头，不去关注重点」）。
+   * 同一张图、同一个尺寸，换成下面这个问法，回答从 5 个字变成 63 个字，而且把 17px 的
+   * 警告框一字不差抄了出来。**问题从来不在模型，也不在分辨率**（实测缩到 512 宽连 13px
+   * 的页脚都还认得出）。
+   *
+   * 【为什么"照抄"两个字不能省】不要求她抄原话，她就会概括成"一个关于 Rust 的文档" ——
+   * 抄出来才能看出她到底看清了没有。
+   *
+   * 【为什么要告诉她圈是什么】Windows 的截图**不带鼠标指针**，她自己看不出主人在看哪一块。
+   * 壳在图上画了洋红色的圈，不点明的话她可能把那圈当成屏幕内容的一部分。
+   *
+   * 【为什么要给"上一次"】那是主人点名要的"根据之前的分析判断他在干嘛"：有了上一轮的结论，
+   * 她才能说"刚才那页警告，你现在是去改配置了？"，而不是每轮都从零开始描述。
+   */
+  function buildSeePrompt(n, cursor, prevSee) {
+    var lines = [];
+    lines.push(
+      n === 1
+        ? '这是主人电脑屏幕的截图。'
+        : '这是主人电脑屏幕的 ' + n + ' 张截图，按时间先后排列（第一张最早，最后一张是刚刚）。',
+    );
+    lines.push(
+      cursor
+        ? '最后那张图里那个洋红色的圈是他鼠标停的地方，重点优先看那里。'
+        : '（最后那张图里没有圈 —— 截图那一刻他的鼠标不在这个窗口里。）',
+    );
+    if (prevSee) lines.push('上一次你看的时候，他是在：' + prevSee);
+    lines.push('回答下面几件事，每件占一行，不要客套、不要复述我这句话：');
+    lines.push('第一行「在做什么」：他正在看什么、干什么，一句话。');
+    lines.push('第二行「重点」：最近这张里最该注意的那一处，把那上面写的字照抄出来。');
+    if (n > 1) {
+      lines.push(
+        '第三行「变化」：这几张之间他换过什么、像是要去做什么（看不出来就写"没什么变化"）。',
+      );
+    }
+    lines.push('看不清就直说看不清，别猜。');
+    return lines.join('\n');
+  }
+
+  /**
+   * 把壳截好的**最近几张**图一起交给她看，然后把她看到的说给壳听。
+   *
+   * 【为什么是"最近几张"而不是"攒够才发"】主人 2026-10-06 明确纠正过：不是攒着不发，
+   * 而是**每轮都带最近 3 张** —— 每次请求里都有一小段过程（最新那张 + 前两张），
+   * 她因此能说出"他换过什么"。代价是 token（3 张 = 600，单张 200），**不是时间**：
+   * 重叠的那两张凭 seq 复用 file_id，只有新那张要真上传。
+   */
+  function seeShots(shots, prevSee) {
+    var util = window.__DSC_DS_UTIL__;
+    if (!util || typeof util.seeImages !== 'function') {
+      return Promise.reject(new Error('deepseek-client 没加载（或版本太旧）'));
+    }
+    var list = (shots || []).filter(function (s) {
+      return s && s.b64;
+    });
+    if (!list.length) return Promise.reject(new Error('没有图'));
+
+    var items = list.map(function (s) {
+      var known = shotFileIds[s.seq];
+      return known ? { fileId: known, shot: s } : { blob: b64ToBlob(s.b64), shot: s };
+    });
+    var reuse = items.length - items.filter(function (x) { return !x.fileId; }).length;
+
+    var last = list[list.length - 1];
+    var size = (last.w || 0) + 'x' + (last.h || 0);
+    var prompt = buildSeePrompt(list.length, last.cursor, prevSee);
+    // 验收要看的就是这几项（几张、复用了几个、有没有圈、她回了什么）。**不存图本身**
     window.__DSC_LAST_SHOT__ = {
+      count: list.length,
+      reused: reuse,
       size: size,
-      cursor: !!shot.cursor,
-      bytes: blob.size,
-      screen: shot.size || '',
+      cursor: !!last.cursor,
+      screen: last.size || '',
       at: Date.now(),
       text: '',
-      fileId: '',
+      fileIds: [],
       err: '',
     };
-    log('SEE 收图 ' + Math.round(blob.size / 1024) + 'KB ' + size + (shot.cursor ? ' 有圈' : ' 无圈'));
+    log(
+      'SEE 收 ' + list.length + ' 张（复用 ' + reuse + ' · 新传 ' + (list.length - reuse) + '）' +
+        '最近一张 ' + size + (last.cursor ? ' 有圈' : ' 无圈'),
+    );
     return util
-      .seeImage(blob, prompt, { filename: 'dsc-screen-' + Date.now() + '.png' })
+      .seeImages(items, prompt, { namePrefix: 'dsc-screen-' })
       .then(function (r) {
+        // 记下 seq → file_id：下一轮重叠的那几张就不必重传了。只留最近十几条，别让它无限长。
+        (r.fileIds || []).forEach(function (id, i) {
+          var seq = items[i] && items[i].shot ? items[i].shot.seq : null;
+          if (seq !== null && seq !== undefined) shotFileIds[seq] = id;
+        });
+        Object.keys(shotFileIds)
+          .map(Number)
+          .sort(function (a, b) {
+            return b - a;
+          })
+          .slice(12)
+          .forEach(function (k) {
+            delete shotFileIds[k];
+          });
         var text = (r && r.text) || '';
         window.__DSC_LAST_SHOT__.text = text;
-        window.__DSC_LAST_SHOT__.fileId = (r && r.fileId) || '';
+        window.__DSC_LAST_SHOT__.fileIds = r.fileIds || [];
         log('SEE ok ' + text.slice(0, 90).replace(/\n/g, ' / '));
         return invoke('dsc_screen_see', { text: text, size: size });
       });
@@ -1153,8 +1236,12 @@
         // （PoW + cookie），壳里做不了，所以这段路必须走页面。看到的那段用
         // `dsc_screen_see` 送回去，下一轮就拼进【他屏幕上】。
         // 【为什么不 await】它要上传 + 等解析 + 提问，好几秒 —— 挡住了会把这一轮拖死。
-        if (r.screenShot && r.screenShot.b64) {
-          seeShot(r.screenShot)['catch'](function (e) {
+        // 【她亲眼看】壳手上攒着新图就丢过来（**最近 N 张**）—— 上传和提问只能用页面的
+        // 登录态（PoW + cookie），壳里做不了，所以这段路必须走页面。看到的那段用
+        // `dsc_screen_see` 送回去，下一轮就拼进【他屏幕上】。
+        // 【为什么不 await】它要上传 + 等解析 + 提问，好几秒 —— 挡住了会把这一轮拖死。
+        if (r.screenShots && r.screenShots.length) {
+          seeShots(r.screenShots, r.screenSeePrev || '')['catch'](function (e) {
             log('SEE failed ' + e);
           });
         }

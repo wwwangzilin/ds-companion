@@ -1,29 +1,26 @@
-/* 她"亲眼看一眼屏幕"这条路的端到端验收。
+/* 她"亲眼看一眼屏幕"这条路的端到端验收（含"一次看最近 3 张"）。
  *
- * 【验的是什么】不是多模态通不通（那已经被 probe-vision-focus.mjs 验过了），而是
- * **这一条新链路**：
- *     壳定时截屏 → 缩到 512 → 把鼠标位置画成圈 → 交给页面
- *       → 页面上传 + 用定稿提示词问她 → 她答"在做什么 + 重点" → 回传给壳
- *         → 壳下一轮把它拼进【他屏幕上】
+ * 【验的是什么】
+ *     壳定时截屏 → 缩到 512 → 把鼠标位置画成圈 → 攒成滑动窗口（最近 N 张）
+ *       → 交给页面 → 页面上传（重叠的那几张复用 file_id）+ 用定稿提示词问她
+ *         → 她答"在做什么 / 重点 / 变化" → 回传给壳 → 壳下一轮拼进【他屏幕上】
  *
- * 【为什么能验"重点"】前台放的是 .verify/see-target.ps1 那个内容固定的窗口，
- * 上面唯一一块深红色的字是 `* release code 7788` —— 那就是这块板子的"重点"。
- * 她要是不光念大标题、还把 7788 抄了出来，说明"圈 + 提示词"这条路真的把她的注意力
- * 落到了正确的地方。拿主人的真实屏幕验不出这个：没有可断言的期望值，还会把屏幕内容
- * 传到账号里。
+ * 【为什么用两块内容不同的板子】壳那边"内容没变就不造图"会把一样的屏去重掉 ——
+ * 只用一块板子的话窗口永远只有 1 张，验不出"一次发 3 张"。所以交替把
+ * `see-target.ps1 -Tag A` / `-Tag B` 抢到前台，每次手动截一张：A → B → A。
+ * 去重只跟**窗口里最后一张**比，所以这三张都会进来。
  *
- * 前置（不满足就退出，脚本不负责起这些东西）：
- *   ① app 用**隔离数据目录** + CDP 起来，且那份 config.json 里
- *      screen_watch=true、screen_see=true（壳起来后 15 秒内必然自己截第一次）
- *   ② .verify/see-target.ps1 已经在跑、并在前台
+ * 【验"复用"】第一次发出去 3 张（全是新上传）；再截一张 B 之后窗口变成 [B,A,B]，
+ * 其中两张上一轮传过了 —— 第二次发时应该 `reused=2`，只有新那张要真上传。
+ * 这是这个功能能不能用的关键：不然每轮重传 3 张，一次请求要等十几秒。
  *
- * 用法：$env:DSC_ALLOW_REAL_DATA='1'; node .verify/verify-screen-see.mjs
+ * 前置：两块板子已经起了（见 README 的验收一节），壳以隔离数据目录 + CDP 起来。
+ * 用法：$env:DSC_CDP='http://127.0.0.1:9223'; node .verify/verify-screen-see.mjs
  */
 import { requireIsolation } from './_env.mjs';
 
 const BASE = process.env.DSC_CDP_BASE || 'http://127.0.0.1:9223';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const ROUNDS = Number(process.env.DSC_SEE_ROUNDS || 14);
 
 function send(target, method, params = {}, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
@@ -65,7 +62,7 @@ async function evalIn(target, expression, timeoutMs) {
   return r && r.result ? r.result.value : undefined;
 }
 
-async function findTarget(match, timeoutMs = 45000) {
+async function findTarget(match, timeoutMs = 40000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
@@ -82,7 +79,7 @@ console.log(`[cdp] ${BASE}`);
 const main = await findTarget('deepseek.com');
 
 // 【顺序有讲究】门禁（requireIsolation）是问**设置窗口**要数据目录的，所以必须先把它
-// 叫出来，门禁才走得通。第一版把门禁放在最前面，结果它自己把脚本拦了（exit 2）。
+// 叫出来。主页面有 `open_settings` 权限。
 await evalIn(main, `window.__TAURI_INTERNALS__.invoke('open_settings')`);
 let settings = null;
 try {
@@ -93,19 +90,12 @@ try {
 }
 await requireIsolation();
 
-// ── 武装：把两个开关打开 ──────────────────────────────────────────────
-// 【为什么要走设置页】`config_set` 只允许本地设置窗口调（远程页面没有这个权限）——
-// 而"手写一份 config.json"这条路走不通：它不是全字段可选，缺一个 `cadence` 就会被
-// 当成坏文件隔离掉、然后拿默认值启动（实测踩过，现象是"开关开了但一个截图都没有"）。
-//
-// 【字段名必须是 camelCase】AppConfig 上有 `serde(rename_all = "camelCase")`，所以前端
-// 看到的是 `screenWatch` / `screenSee`。按 Rust 那边的 snake_case 写，等于**加了个新字段**：
-// serde 忽略未知字段、原字段还是 false，而回读拿到的也是 undefined —— 现象就是
-// `[arm] {}`：既没报错、开关也没开。这个坑在 Quill 的 AI 参数上踩过一次（maxTokens）。
-// 【要一个干净的起点】这条链路有两道去重：①壳"同一屏内容只造一张图" ②注入块
-// "和上一轮一样就不再注入"。它们平时是对的（同一页盯半小时不该反复花额度），但验收
-// 里会让"第二次跑同一块板子"看起来像坏了（板子的 OCR 文本一模一样）。
-// 清起点走**关一次开关**这条路：壳关开关时会清掉去重状态（`forget_last_injected`）。
+// ── 武装：开关打开、每次看 3 张、清一个干净的起点 ──────────────────────
+// 【字段名必须是 camelCase】AppConfig 上有 `serde(rename_all = "camelCase")`，按 Rust 的
+// snake_case 写等于**加了个新字段**：serde 忽略它、原字段还是旧值，回读也是 undefined。
+// 【为什么要"关一次再开"】这条链路有两道去重（壳的"同一屏只造一张"、注入块的"和上轮一样
+// 就不注入"）。它们平时是对的，但会让"第二次跑同一块板子"看起来像坏了 —— 关一次开关，
+// 壳会把去重状态清掉。
 await evalIn(main, `window.__DSC_LAST_SHOT__ = null`);
 const armed = await evalIn(
   settings,
@@ -117,148 +107,146 @@ const armed = await evalIn(
      cfg.screenWatch = true;
      cfg.screenSee = true;
      cfg.screenEveryMinutes = 1;
+     cfg.screenSeeBatch = 3;
      await inv('config_set', { cfg: cfg });
      const back = await inv('config_get');
      return JSON.stringify({
-       watch: back.screenWatch, see: back.screenSee, every: back.screenEveryMinutes,
+       watch: back.screenWatch, see: back.screenSee,
+       every: back.screenEveryMinutes, batch: back.screenSeeBatch,
      });
    })()`,
   60000,
 );
 console.log('[arm] ' + armed);
-if (!/"watch":true/.test(String(armed)) || !/"see":true/.test(String(armed))) {
-  console.log('FAIL  开关没打开');
+if (!/"batch":3/.test(String(armed))) {
+  console.log('FAIL  「每次看几张」没设成 3');
   process.exit(1);
 }
 
-// ── 把验收窗口抢回前台 + 把鼠标停到它中间 ──────────────────────────────
-// 开关这一步把注意力给了设置窗口，而壳截的是**前台窗口** —— 不抢回来的话它截到的是
-// 它自己（会被"在看自己"跳过）。鼠标位置就是图里那个圈，所以也得摆进去。
 const { spawnSync } = await import('node:child_process');
 const focusPs1 = new URL('./focus-window.ps1', import.meta.url).pathname.replace(/^\//, '');
-const focus = spawnSync(
-  'powershell',
-  ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', focusPs1, '-PutCursor'],
-  { encoding: 'utf8' },
-);
-console.log('[focus] ' + String(focus.stdout || '').trim() + (focus.error ? ' ERR ' + focus.error : ''));
-if (!/fg=True/.test(String(focus.stdout || ''))) {
-  console.log('FAIL  验收窗口没抢到前台（前台是被谁占着？see-target.ps1 起了吗？）');
-  process.exit(2);
+
+/** 把某块板子抢到前台，然后手动截一张 —— 不用等那个分钟级的节拍器 */
+async function board(tag) {
+  const f = spawnSync(
+    'powershell',
+    [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      focusPs1,
+      '-PutCursor',
+      '-Title',
+      `DSC SEE TARGET ${tag}`,
+    ],
+    { encoding: 'utf8' },
+  );
+  if (!/fg=True/.test(String(f.stdout || ''))) {
+    console.log(`FAIL  板子 ${tag} 没抢到前台：${String(f.stdout || '').trim()}`);
+    process.exit(2);
+  }
+  await sleep(800);
+  const s = await evalIn(settings, `window.__TAURI_INTERNALS__.invoke('dsc_screen_now')`, 90000);
+  console.log(
+    `[shot] 板子 ${tag}：${s && s.size} ${s && s.ms}ms lines=${s && s.lines}` +
+      ` skipped=${JSON.stringify((s && s.skipped) || '')}`,
+  );
+  if (s && s.skipped) {
+    console.log('   ⚠ 这一次被跳过了 —— 前台窗口不对（敏感软件 / 壳自己）');
+  }
 }
 
-// ── 手动截一次：不用等那个分钟级的节拍器 ──────────────────────────────
-const snap = await evalIn(settings, `window.__TAURI_INTERNALS__.invoke('dsc_screen_now')`, 90000);
-console.log(
-  `[shot] 壳截了一次：${snap && snap.size} ${snap && snap.ms}ms lines=${snap && snap.lines}` +
-    ` skipped=${JSON.stringify((snap && snap.skipped) || '')}`,
-);
-if (snap && snap.skipped) {
-  console.log('   ⚠ 这次被跳过了 —— 前台窗口不对（敏感软件 / 壳自己），后面多半拿不到图');
-}
-
-const hasProbe = await evalIn(main, `typeof window.__DSC_REPORT_TURN__ === 'function'`);
-if (!hasProbe) {
-  console.log('FAIL  页面里没有 __DSC_REPORT_TURN__ —— 注入脚本没加载？');
-  process.exit(1);
-}
-
-/** 拉一次这一轮的观察值：注入块 + 最近一张图的情况 */
+/** 拉一次观察值 */
 async function observe() {
   const raw = await evalIn(
     main,
     `JSON.stringify({
        screen: (window.__DSC_TURN__ && window.__DSC_TURN__.screen) || '',
-       front: (window.__DSC_TURN__ && window.__DSC_TURN__.front) || '',
        shot: window.__DSC_LAST_SHOT__ || null
      })`,
   );
   return JSON.parse(raw || '{}');
 }
 
-console.log('[wait] 等壳自己截一次（tick 15 秒醒一次，手上没图时第一次到点就截）…');
-let seen = null;
-let shotAt = 0;
-const started = Date.now();
-for (let i = 1; i <= ROUNDS; i++) {
-  await evalIn(main, `window.__DSC_REPORT_TURN__('')`, 60000);
-  await sleep(6000);
-  const o = await observe();
-  const secs = Math.round((Date.now() - started) / 1000);
-  if (o.shot && !shotAt) {
-    shotAt = Date.now();
-    console.log(`  [${secs}s] 页面收到图：${o.shot.size} ${Math.round(o.shot.bytes / 1024)}KB` +
-      ` 截的是 ${o.shot.screen} 圈=${o.shot.cursor ? '有' : '无'}`);
-    console.log(`        前台是：${(o.front || '').split('\n')[0].slice(0, 70)}`);
+/** 反复 report 直到她看完这一批（返回那次的观察值） */
+async function pumpUntilSee(prevText, rounds = 12) {
+  for (let i = 0; i < rounds; i++) {
+    await evalIn(main, `window.__DSC_REPORT_TURN__('')`, 60000);
+    await sleep(6000);
+    const o = await observe();
+    if (o.shot && o.shot.text && o.shot.text !== prevText) return o;
   }
-  if (o.shot && o.shot.text) {
-    console.log(`  [${secs}s] 她看完了：${o.shot.text.replace(/\n/g, ' / ').slice(0, 100)}`);
-  }
-  if (/你自己看了一眼/.test(o.screen)) {
-    seen = o;
-    break;
-  }
-  if (i % 3 === 0) console.log(`  [${secs}s] 还在等（第 ${i} 轮）…`);
+  return null;
 }
 
-console.log('');
-if (!seen) {
+// ── 第一轮：造 3 张不同的图，看她能不能一次看 3 张 ──────────────────────
+console.log('[plan] 交替切两块板子，攒出 3 张内容不同的截图…');
+await board('A');
+await board('B');
+await board('A');
+
+const first = await pumpUntilSee('');
+if (!first) {
+  console.log('');
+  console.log('FAIL  等不到她看完第一轮');
   const last = await observe();
-  console.log('FAIL  等不到【他屏幕上】走"亲眼看过"那一版');
-  console.log('  最后一次看到：screen=' + JSON.stringify(String(last.screen || '').slice(0, 160)));
   console.log('  最近一张图：' + JSON.stringify(last.shot));
-  console.log('  排查顺序：① 前台是不是被 DS Companion 自己占了（那会被"在看自己"跳过）');
-  console.log('            ② config.json 里 screen_see 有没有开 ③ 壳日志里有没有 [screen] 行');
+  console.log('  排查：① 板子起没起（标题 DSC SEE TARGET A/B）② 前台是不是被壳自己占了');
   process.exit(1);
 }
+console.log('');
+console.log('──────── 她看到的（第一轮）────────');
+console.log(String(first.shot.text).trim());
+console.log('──────────────────────────────────');
 
-const shot = seen.shot || {};
-const text = String(shot.text || '');
-const block = String(seen.screen || '');
-console.log('──────── 她看到的（原话）────────');
-console.log(text.trim() || '（空）');
-console.log('────────────────────────────────');
-console.log('──────── 下一轮注入进对话的【他屏幕上】────────');
+// ── 第二轮：再截一张 B → 窗口变 [B,A,B]，其中两张该复用 ────────────────
+console.log('');
+console.log('[plan] 再截一张 B —— 窗口会变成 [B,A,B]，其中两张上一轮传过了，该复用…');
+await board('B');
+const second = await pumpUntilSee(first.shot.text);
+if (!second) {
+  console.log('');
+  console.log('FAIL  等不到第二轮（新图进来之后她该再看一次）');
+  process.exit(1);
+}
+console.log('');
+console.log('──────── 她看到的（第二轮）────────');
+console.log(String(second.shot.text).trim());
+console.log('──────────────────────────────────');
+
+const block = String(second.screen || '');
+console.log('');
+console.log('──────── 注入进对话的【他屏幕上】────────');
 console.log(block.trim());
-console.log('────────────────────────────────────────────');
+console.log('────────────────────────────────────────');
 
+const f1 = first.shot || {};
+const f2 = second.shot || {};
+const t2 = String(f2.text || '');
 const checks = [
-  ['壳把截图交给了页面', !!shot.size, `图 ${shot.size}，${Math.round((shot.bytes || 0) / 1024)}KB`],
-  ['图上画了鼠标圈', shot.cursor === true, `cursor=${shot.cursor}`],
-  ['图片是按 512 宽缩过的', /^512x\d+$/.test(String(shot.size)), `size=${shot.size}`],
-  ['她抄出了重点那行（7788）', /7788/.test(text), /7788/.test(text) ? '抄到了' : '没提 7788'],
-  ['她也读到了大标题', /VERIFY/i.test(text), /VERIFY/i.test(text) ? '读到了' : '没提 VERIFY'],
+  ['第一轮一次看了 3 张', f1.count === 3, `count=${f1.count}`],
+  ['第一轮全是新上传的（起点干净）', f1.reused === 0, `reused=${f1.reused}`],
+  ['图上画了鼠标圈', f2.cursor === true, `cursor=${f2.cursor}`],
+  ['图片是按 512 宽缩过的', /^512x\d+$/.test(String(f2.size)), `size=${f2.size}`],
+  ['第二轮同样是 3 张', f2.count === 3, `count=${f2.count}`],
+  ['★重叠的那两张复用了，没重传★', f2.reused === 2, `reused=${f2.reused}（期望 2）`],
+  ['她抄出了重点那行（7788）', /7788/.test(t2), /7788/.test(t2) ? '抄到了' : '没提 7788'],
+  ['她能说出跨张的"变化"这一行', /变化/.test(t2), /变化/.test(t2) ? '有这一行' : '没有'],
   ['注入块走的是"亲眼看过"那一版', /你自己看了一眼/.test(block), block.split('\n')[0].slice(0, 40)],
   ['注入块里带上了她抄的那行', /7788/.test(block), /7788/.test(block) ? '在' : '不在'],
 ];
 
-// ── 她嘴里那句：必须来自"亲眼看"，不能是 OCR 挑的 ──────────────────────
-// 板上那行的 OCR 结果是 `* release code 7788`（带星号），而她抄回来的是
-// `release code 7788`。所以星号在不在，正好能分辨这句是从哪条路来的 ——
-// 这是主人报的"乱码"那个 bug 的回归断言（OCR 挑出来的小字是偏旁碎片）。
-const sayRaw = await evalIn(
-  settings,
-  `(async () => {
-     const s = await window.__TAURI_INTERNALS__.invoke('dsc_screen_state');
-     return JSON.stringify({ say: s.say || '', see: s.see || '', seeFor: s.seeFor || '' });
-   })()`,
-  60000,
-);
-const sayInfo = JSON.parse(String(sayRaw));
-console.log('');
-console.log('[她说] ' + (sayInfo.say || '（没说）'));
-console.log('[她看到] ' + String(sayInfo.see || '').replace(/\n/g, ' / ').slice(0, 100));
-checks.push([
-  '她嘴里那句来自"亲眼看"（不带 OCR 的星号）',
-  /release code 7788/.test(sayInfo.say) && !/\*/.test(sayInfo.say),
-  sayInfo.say.slice(0, 50) || '（空）',
-]);
-
 let bad = 0;
+console.log('');
 for (const [name, ok, ev] of checks) {
   if (!ok) bad++;
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}  —  ${ev}`);
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ev ? '  —  ' + ev : ''}`);
 }
 console.log('');
-console.log(bad === 0 ? `★ 全过：${checks.length}/${checks.length} —— 焦点这条路通了 ★` : `${checks.length - bad}/${checks.length} 过，${bad} 条没过`);
+console.log(
+  bad === 0
+    ? `★ 全过：${checks.length}/${checks.length} —— 多张 + 复用这条路通了 ★`
+    : `${checks.length - bad}/${checks.length} 过，${bad} 条没过`,
+);
 process.exit(bad === 0 ? 0 : 1);

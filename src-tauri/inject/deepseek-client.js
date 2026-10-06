@@ -1151,6 +1151,61 @@
     return { text: (r && r.text) || '', fileId: up.id, raw: r, ready: info };
   }
 
+  /**
+   * 传**多张**图 + 问一句（一次做完）。返回模型的答复文本。
+   *
+   * 【为什么要有它】主人要的是"每轮都带最近 3 张"——她因此能从"这一小段过程"里看出
+   * 他在干什么，而不是只看一张快照。
+   *
+   * 【items 里可以带 fileId】滑动窗口和上一轮是**重叠**的（发过 [1,2,3]，下一轮发 [2,3,4]）。
+   * 带上 `fileId` 的那几张直接复用，只有新的那张真上传 —— 否则每轮重传 3 张，
+   * 一次请求要等十几秒。
+   *
+   * 【必须等每一张都解析完】少等一张，上游就回 `invalid ref file id`（那话很误导，
+   * 看着像 id 写错了，其实是"这张还没准备好"）。单张那条路为此连踩三次，这里一样要防。
+   */
+  async function seeImages(items, prompt, opts) {
+    var o = opts || {};
+    var list = (items || []).filter(function (x) {
+      return x && (x.fileId || x.blob);
+    });
+    if (!list.length) throw new Error('seeImages：一条都没有');
+    // 有 id 的复用，没有的才传；上传彼此独立，并行跑
+    var fresh = [];
+    var ids = await Promise.all(
+      list.map(function (x) {
+        if (x.fileId) return Promise.resolve(x.fileId);
+        fresh.push(x);
+        return uploadFile(x.blob, (o.namePrefix || 'dsc-screen-') + fresh.length + '.png').then(
+          function (u) {
+            return u.id;
+          },
+        );
+      }),
+    );
+    // 只有**这一轮新传的**需要等解析 —— 老的上一轮已经等过了
+    var newIds = ids.filter(function (id, i) {
+      return !list[i].fileId;
+    });
+    if (newIds.length) {
+      var infos = await Promise.all(
+        newIds.map(function (id) {
+          return waitFileReady(id, o.waitMs || 25000);
+        }),
+      );
+      var bad = infos.filter(function (f) {
+        return f && f.status === 'FAILED';
+      });
+      if (bad.length) throw new Error('有 ' + bad.length + ' 张图服务端解析失败');
+    }
+    var r = await ask(o.kind || 'see', prompt, {
+      refFileIds: ids,
+      modelType: o.modelType || pickFileModelType(),
+      chainTurns: o.chainTurns,
+    });
+    return { text: (r && r.text) || '', fileIds: ids, raw: r, uploaded: newIds.length };
+  }
+
   function sleep(ms) {
     return new Promise(function (r) {
       setTimeout(r, ms);
@@ -1177,6 +1232,7 @@
     uploadFile: uploadFile,
     fetchFiles: fetchFiles,
     seeImage: seeImage,
+    seeImages: seeImages,
   };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = root.__DSC_DS_UTIL__;

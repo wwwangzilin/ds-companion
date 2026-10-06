@@ -367,12 +367,17 @@ struct TurnReport {
     front_text: String,
     /// 【他屏幕上】块正文（空 = 不加）—— 屏幕上的字（要 `screen_watch` 开着，且和上轮不同）
     screen_text: String,
-    /// 等她**亲眼看**的一张截图（base64 PNG + 尺寸）。
+    /// 等她**亲眼看**的截图（base64 PNG + 尺寸），**最近几张**（默认 3 张）。
     ///
     /// 【为什么走这条路回页面】上传图片要用页面的登录态和 PoW，壳里做不了 ——
-    /// 所以壳只负责"截好、缩好、把鼠标圈画上"，图交给页面去传、去问，
-    /// 拿到的那段描述再由页面调 `dsc_screen_see` 送回来。**取走即清**，每张图只给一次。
-    screen_shot: Option<screen::Shot>,
+    /// 所以壳只负责"截好、缩好、把鼠标圈画上、按时间排好"，图交给页面去传、去问，
+    /// 拿到的那段描述再由页面调 `dsc_screen_see` 送回来。
+    /// 每轮给的是**滑动窗口**（最近 N 张，和上一轮有重叠）—— 重叠那几张页面凭 `seq`
+    /// 认得出、不用重新上传，所以她看到的永远是一小段过程而不是一张快照。
+    screen_shots: Vec<screen::Shot>,
+    /// 上一轮她看到的"在做什么" —— 拼进提示词，让她能接上上下文
+    /// （"刚才那页警告，你现在是去改配置了？"）。
+    screen_see_prev: String,
     /// 通路自检的告警（空 = 没看出问题）。
     ///
     /// 【为什么要跟着每轮回来】"机制没坏、通路断了"这类问题（情绪冻结、饿着没人管）
@@ -513,7 +518,8 @@ fn dsc_turn_report(
             peer_text: String::new(),
             front_text: String::new(),
             screen_text: String::new(),
-            screen_shot: None,
+            screen_shots: Vec::new(),
+            screen_see_prev: String::new(),
             vitals: Vec::new(),
         };
     }
@@ -689,11 +695,15 @@ fn dsc_turn_report(
     // 【他屏幕上】—— 屏幕上的字。要 `screen_watch` 开着，而且**这一段和上一轮不同**
     // 才会出现（同一个页面盯久了不该每轮都把那 240 字塞进上下文）。
     let screen_text = screen::render_block(&cfg);
-    // 她"亲眼看"那条路：手上有一张新图就交给页面（取走即清，每张只给一次）。
-    // 没图就是 None，页面什么都不用做。
-    let screen_shot = screen::take_shot();
-    if screen_shot.is_some() {
-        shell_log("[screen] 交一张截图给页面（她亲眼看）");
+    // 她"亲眼看"那条路：手上攒着新图就交给页面（**最近 N 张**，和上一轮有重叠的那几张
+    // 页面凭 seq 认得出、不用重传）。没有新图就是空数组，页面什么都不用做。
+    let screen_shots = screen::take_shots();
+    let screen_see_prev = screen::see_prev();
+    if !screen_shots.is_empty() {
+        shell_log(&format!(
+            "[screen] 交 {} 张截图给页面（她亲眼看）",
+            screen_shots.len()
+        ));
     }
 
     shell_log(&format!(
@@ -768,7 +778,8 @@ fn dsc_turn_report(
         peer_text,
         front_text,
         screen_text,
-        screen_shot,
+        screen_shots,
+        screen_see_prev,
         vitals,
     }
 }
