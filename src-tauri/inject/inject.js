@@ -20,6 +20,17 @@
   // "以下是主人本次的输入"；现在顺序反过来（见 applyInject），这句也得指对方向 ——
   // 顺便告诉模型"最上面那句才是他说的"，免得它把背景当问题。
   var MARK_TAIL = '【以上是人设。主人这次说的话在最上面】';
+
+  // 注入块的**头一个字符**：零宽空格。
+  ///
+  /// 【为什么要它】注入是改 `body.prompt`，服务器存的就是带块的那一份 —— F5 读回来时，
+  /// "哪一段是注入块"在文本里**没有任何标记**（`MARK_TAIL` 在注入段中间，它后面还有
+  /// 工具/状态/回忆…一串块）。要在显示层只藏注入块，就得有个确定无疑的刀口。
+  /// 零宽字符：屏幕上看不见、不占宽度、模型那边几乎不花 token，但 `indexOf` 一找就中。
+  ///
+  /// 【旧消息怎么办】那时还没这个字符。改用壳的聊天留档（`chat_recent`）里他打的原文
+  /// 去定位 —— 见下面 `veilMessages()`。
+  var VEIL_SEP = '\u200b';
   var stats = { seen: 0, injected: 0, skipped: 0, viaXhr: 0, viaFetch: 0, urls: [], errors: 0 };
   var BOOT_AT = Date.now();
 
@@ -327,6 +338,10 @@
       publishReceipt(false, d.why, [], 0, via, d.first);
       return null;
     }
+
+    // ★刀口★：把零宽字符顶到最前面 —— 显示层靠它认出"注入块从这儿开始"（见 veilMessages）。
+    // 放在这个位置（`if (!prefix)` 判完之后）才不会把"没有块可注入"误判成"有"。
+    prefix = VEIL_SEP + prefix;
 
     // 记下这一轮真正拼进去的前缀：工具结果回灌时要带"同一份工具说明"
     // （工具没开时为空，回灌就不会平白多出一段用不了的工具说明）
@@ -3266,14 +3281,248 @@
     return n;
   }
 
-  /** 侧栏是 React 渲染的：它每次重画都可能把 class 冲掉，所以盯着补 */
+  // ═══════════════ 把注入块从消息正文里**真的藏掉** ═══════════════
+  //
+  // 【为什么必须动 DOM，而不是改拼法就够了】改拼法（见 applyInject）只解决"折叠露出来的是
+  // 谁"—— 你要是只打「继续」两个字，折叠的那 192px 里「继续」之后**还剩一大片**，
+  // 提示词照样露出来（主人的原话："那个消息刷新还是会露出完整提示词"）。
+  // 而且拼法只管以后发的：**服务器存着的历史消息改不动**，那些消息的注入块就在最前面。
+  //
+  // 【为什么能切】实测整条消息的正文是**一个纯文本节点**（`pCount:0` / `brCount:0`），
+  // 注入块和主人的话之间没有元素边界 —— 所以只能把这个文本节点切开。
+  //
+  // 【边界怎么找】两种落点都要覆盖：
+  //     换序之前：`注入块 + 他的话`   → 他的话在**后面**
+  //     换序之后：`他的话 + 注入块`   → 他的话在**前面**
+  //   · 新消息：注入块的头是 `VEIL_SEP`（零宽字符），边界是**确定的**。
+  //   · 旧消息：那时还没这个字符，`MARK_TAIL` 又在注入段中间 —— 只能拿"他当时到底打了什么"
+  //     来反推。而那份原文壳里**有**（聊天留档，`chat_recent`），拿它一定位就精确了。
+  //     定位不出来就**一个字都不动**（宁可露着，也绝不能把他的话切掉）。
+  //
+  // 【为什么不整体换掉那个文本节点】React 记着那个节点实例、随时会 `node.nodeValue = …`。
+  // 所以**只改它的值**（留下他的话），把注入那截塞进紧随其后的 `display:none` span：
+  // React 不认那个 span，而万一它把值改回全文，观察器下一轮会重新切一遍 —— 自愈。
+  //
+  // 【display:none 顺便解决三件事】看不见；`Ctrl+C` 复制时浏览器会跳过它（正好）；不占高度，
+  // 上游那个 192px 折叠也就用不着了。
+  var VEIL_KEY = 'dsc-hide-injected';
+  var talkCache = { at: 0, key: '', all: [] };
+
+  function veilOn() {
+    try {
+      return localStorage.getItem(VEIL_KEY) !== '0'; // 默认藏
+    } catch (e) {
+      return true;
+    }
+  }
+
+  /** 当前会话 id（从地址栏拿）。首页 / 新对话时是空串 */
+  function currentSession() {
+    var m = String(location.pathname || '').match(/\/a\/chat\/s\/([0-9a-f-]{8,})/i);
+    return m ? m[1] : '';
+  }
+
+  /**
+   * 拉一次壳的聊天留档，缓存成"他说过的话"的清单（旧消息的边界只能从这儿拿）。
+   *
+   * 【为什么要按会话分组】不同会话里他可能打过一模一样的话（"继续"、"1"），
+   * 同会话内的顺序对得上才敢拿来定位。
+   */
+  function loadTalk() {
+    var now = Date.now();
+    var sid = currentSession();
+    if (talkCache.at && talkCache.key === sid && now - talkCache.at < 60000) return;
+    talkCache.at = now;
+    talkCache.key = sid;
+    try {
+      invoke('chat_recent', { limit: 60 })
+        .then(function (rows) {
+          var mine = [];
+          var all = [];
+          (rows || []).forEach(function (r) {
+            var u = String((r && r.user) || '').trim();
+            if (!u) return;
+            var s = String((r && r.session) || '');
+            // 会话 id 可能只存了前 8 位（留档文件里就是 `d519b459-7a4…` 这样）
+            if (sid && s && (s.indexOf(sid) === 0 || sid.indexOf(s) === 0)) mine.push(u);
+            all.push(u);
+          });
+          talkCache.all = mine.length ? mine.concat(all) : all;
+          // 拿到了就立刻重切一遍（第一遍可能跑在它回来之前）
+          veilMessages();
+        })
+        .catch(function () {});
+    } catch (e) {}
+  }
+
+  /** 这条消息里"他自己打的"那一段是哪一段；切不出来就 null（那就一个字都别动） */
+  function hisSpan(text) {
+    // ① 加刀口之后发的新消息：零宽字符就是确定边界（他的话在前）
+    var s = text.indexOf(VEIL_SEP);
+    if (s >= 0) return { from: 0, to: s };
+
+    // ②③ 没有刀口的两批，只能拿留档里他打的原文去反推。**两种落点都要试**：
+    //     换序之后：`他的话 + 注入块`  → 在**开头**
+    //     换序之前：`注入块 + 他的话`  → 在**末尾**
+    //   短句（「1」「、」）在别处也能撞上，所以只认首尾这两头，绝不认中间。
+    //   多个候选都命中时取**最长的那个** —— 「1」太短，优先信更具体的那条。
+    var lead = text.length - text.replace(/^\s+/, '').length;
+    var head = text.replace(/\s+$/, '');
+    var best = null;
+    for (var i = 0; i < talkCache.all.length; i++) {
+      var u = talkCache.all[i];
+      if (!u) continue;
+      if (text.substr(lead, u.length) === u) {
+        if (!best || u.length > (best.to - best.from)) best = { from: lead, to: lead + u.length };
+      } else if (u.length <= head.length && head.slice(head.length - u.length) === u) {
+        if (!best || u.length > (best.to - best.from)) {
+          best = { from: head.length - u.length, to: head.length };
+        }
+      }
+    }
+    return best;
+  }
+
+  function ensureVeilStyle() {
+    if (document.getElementById('dsc-veil-style')) return;
+    var host = document.head || document.documentElement;
+    if (!host) return;
+    var st = document.createElement('style');
+    st.id = 'dsc-veil-style';
+    st.textContent = '.dsc-veil{display:none !important}';
+    host.appendChild(st);
+  }
+
+  /** 切一条消息。返回 true = 这条确实处理过 */
+  function veilCell(cell) {
+    var nodes = [];
+    var w = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT, null);
+    for (var n = w.nextNode(); n; n = w.nextNode()) {
+      // 【必须排掉 veil 自己那个文本节点】切完之后这一格里有**两个**文本节点
+      // （留下的话 + 藏起来的那截）。不排掉的话下面那个 `nodes.length !== 1` 永远成立，
+      // 于是"重算 / 自愈"这条路整个走不通 —— 第一次切完就再也不动它了。
+      if (!n.nodeValue || !n.nodeValue.trim()) continue;
+      if (n.parentNode && n.parentNode.className === 'dsc-veil') continue;
+      nodes.push(n);
+    }
+    // 【结构变了就别乱切】上游改版把正文拆成多个文本节点时，按"只有一个"的老前提动手很危险。
+    if (nodes.length !== 1) return false;
+    var node = nodes[0];
+    var parent = node.parentNode;
+    if (!parent) return false;
+
+    var full = node.nodeValue;
+    // 上一轮是我们写进去的那份值 → 拿记下来的全文重算；否则说明 React 换了内容，以它为准
+    if (node.__dscShown !== undefined && full === node.__dscShown) full = node.__dscFull;
+    if (full.indexOf(MARK_HEAD) < 0 && full.indexOf(VEIL_SEP) < 0) return false; // 没注入块
+
+    var span = hisSpan(full);
+    if (!span) {
+      // 定位不出来：把可能的残留清掉、原文还回去，**一个字都不藏**
+      if (node.__dscFull) {
+        node.nodeValue = full;
+        node.__dscShown = full;
+        node.__dscFull = full;
+      }
+      Array.prototype.forEach.call(cell.querySelectorAll('.dsc-veil'), function (v) {
+        if (v.parentNode) v.parentNode.removeChild(v);
+      });
+      return false;
+    }
+
+    var visible = full.slice(span.from, span.to).replace(/^\s+|\s+$/g, '');
+    var hidden = (full.slice(0, span.from) + full.slice(span.to)).replace(/^\s+|\s+$/g, '');
+
+    // 【内容没变就一根手指都不动】否则我们自己插的 span 会喂给观察器，转成死循环
+    var prev = parent.querySelector(':scope > .dsc-veil');
+    if (node.__dscShown === visible && (!hidden || (prev && prev.textContent === hidden))) return true;
+
+    Array.prototype.forEach.call(cell.querySelectorAll('.dsc-veil'), function (v) {
+      if (v.parentNode) v.parentNode.removeChild(v);
+    });
+    node.__dscFull = full;
+    node.__dscShown = visible;
+    node.nodeValue = visible;
+    if (hidden) {
+      var veil = document.createElement('span');
+      veil.className = 'dsc-veil';
+      veil.textContent = hidden;
+      parent.insertBefore(veil, node.nextSibling);
+    }
+    return true;
+  }
+
+  /** 走一遍页面上所有消息。返回切了几条 */
+  function veilMessages() {
+    var n = 0;
+    var on = veilOn();
+    if (!on) {
+      Array.prototype.forEach.call(document.querySelectorAll('.dsc-veil'), function (v) {
+        if (v.parentNode) v.parentNode.removeChild(v);
+      });
+      return 0;
+    }
+    ensureVeilStyle();
+    Array.prototype.forEach.call(document.querySelectorAll('.ds-collapsible-text'), function (cell) {
+      try {
+        if (veilCell(cell)) n++;
+      } catch (e) {}
+    });
+    return n;
+  }
+
+  // 验收用：现在藏住了几条、每条剩下的可见文字是什么
+  window.__DSC_VEIL__ = function () {
+    var rows = [];
+    Array.prototype.forEach.call(document.querySelectorAll('.ds-collapsible-text'), function (cell) {
+      var veil = cell.querySelector('.dsc-veil');
+      if (!veil) return;
+      var node = null;
+      var w = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT, null);
+      for (var n = w.nextNode(); n; n = w.nextNode()) {
+        // 【别拿到 veil 自己那个文本节点】它就藏在 .dsc-veil 里面，
+        // 拿错了会报出"藏了 1168 字、可见也 1168 字"这种自相矛盾的数
+        if (n.nodeValue && n.nodeValue.trim() && !(n.parentNode && n.parentNode.className === 'dsc-veil')) {
+          node = n;
+        }
+      }
+      rows.push({
+        visible: (cell.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+        hiddenLen: veil.textContent.length,
+        // ★这三个一起构成"一个字都没被吃掉"的证据★
+        // 留下的 + 藏起来 = 原文（两边都 trim 过，所以会差几个空白）
+        shownLen: node ? node.nodeValue.length : -1,
+        fullLen: node && node.__dscFull ? node.__dscFull.length : -1,
+      });
+    });
+    return { on: veilOn(), veiled: rows.length, rows: rows };
+  };
+
+  // 验收用：点一下"藏 / 不藏"（设置页没有这个开关，先给脚本用）
+  window.__DSC_VEIL_SET__ = function (on) {
+    try {
+      localStorage.setItem(VEIL_KEY, on ? '1' : '0');
+    } catch (e) {}
+    return veilMessages();
+  };
+
+  // 侧栏 / 消息区都是 React 渲染的：它每次重画都可能把我们的 class、切好的文本冲掉，所以盯着补
   function watchSidebar() {
-    // 【整段包 try】折叠是**锦上添花**：它崩了绝不能让主链跟着崩。这一条是被实测教出来的。
+    // 【整段包 try】这些是**锦上添花**：崩了绝不能让主链跟着崩。这一条是被实测教出来的。
     try {
       foldSysSessions();
     } catch (e) {
       try {
         log('fold-sys 第一遍没成（不影响别处）：' + e);
+      } catch (e2) {}
+    }
+    // 消息里的注入块：先拿留档、再切一遍（留档回来之后 loadTalk 里还会再切一次）
+    try {
+      loadTalk();
+      veilMessages();
+    } catch (e) {
+      try {
+        log('veil 第一遍没成（不影响别处）：' + e);
       } catch (e2) {}
     }
     try {
@@ -3287,6 +3536,9 @@
           pending = false;
           try {
             foldSysSessions();
+          } catch (e) {}
+          try {
+            veilMessages();
           } catch (e) {}
         }, 300);
       })
