@@ -126,6 +126,30 @@ if (!/"batch":3/.test(String(armed))) {
 const { spawnSync } = await import('node:child_process');
 const focusPs1 = new URL('./focus-window.ps1', import.meta.url).pathname.replace(/^\//, '');
 
+// ── 造两条"主对话"，验「她能看到你刚说了什么」──────────────────────────
+// 【为什么要造】验收跑在隔离数据目录里，没有真实对话 —— 而这条链路要验的正是
+// "把主对话最近几句带给她"。走的 `dsc_chat_append` 就是页面每轮真实对话后调的同一个口子。
+// （日期必须给**本地**日期：壳按天存文件，`chat_recent` 从今天往回读。）
+const seeded = await evalIn(
+  main,
+  `(async () => {
+     const inv = window.__TAURI_INTERNALS__.invoke;
+     const d = new Date();
+     const day = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+       String(d.getDate()).padStart(2, '0');
+     const mk = (user, assistant, clock) => ({
+       at: Date.now(), day: day, clock: clock, character: '露娜',
+       characterId: 'dsh-deepseek', session: 'verify', user: user, assistant: assistant,
+     });
+     await inv('dsc_chat_append', { turn: mk('我在核对两版的发布代码，A 版和 B 版的校验和好像不一样', '嗯，我帮你看看', '20:00') });
+     await inv('dsc_chat_append', { turn: mk('先别管别的，就看这个 7788 的 release code', '好', '20:02') });
+     const back = await inv('chat_recent', { limit: 4 });
+     return JSON.stringify({ n: (back || []).length });
+   })()`,
+  60000,
+);
+console.log('[seed] 造了两条主对话，壳里能读回 ' + seeded);
+
 /** 把某块板子抢到前台，然后手动截一张 —— 不用等那个分钟级的节拍器 */
 async function board(tag) {
   const f = spawnSync(
@@ -239,6 +263,11 @@ const checks = [
   ['她抄出了重点那行（7788）', /7788/.test(t2), /7788/.test(t2) ? '抄到了' : '没提 7788'],
   ['她给了跨张的「变化」', /变化/.test(t2), /变化/.test(t2) ? '有这一行' : '没有'],
   ['★她给了「意图」那一行（四行齐全）★', seeLines.length >= 4, `${seeLines.length} 行`],
+  [
+    '★提示词里带上了主对话最近几句★',
+    /7788|核对/.test(String(f2.talk || '')),
+    String(f2.talk || '').replace(/\n/g, ' / ').slice(0, 70) || '（空）',
+  ],
   ['四行没被截断（她的话完整落地）', t2.length < 420 || !/…$/.test(t2), `${t2.length} 字`],
   ['注入块走的是"亲眼看过"那一版', /你自己看了一眼/.test(block), block.split('\n')[0].slice(0, 40)],
   ['注入块里带上了她抄的那行', /7788/.test(block), /7788/.test(block) ? '在' : '不在'],

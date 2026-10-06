@@ -1088,6 +1088,36 @@
   }
 
   /**
+   * 主对话最近几条 —— 给她做意图推测的**上下文**。
+   *
+   * 【为什么要它】看图那条隐藏链是**独立会话**，看不到主对话。没有这个，她只能从三张图里
+   * 猜"他在干嘛"；有了它才知道"他刚才问的就是这个"，推测才落得到实处。
+   *
+   * 【为什么问壳而不是读页面】壳手里本来就有留档（页面每轮 `dsc_chat_append` 追加过），
+   * 而页面自己的 transcript 在刷新之后是空的。一次 IPC，零 token。
+   *
+   * 【读不到就返回空】少一段背景，总比把整条链拖失败强。
+   */
+  function recentTalk(limit) {
+    return invoke('chat_recent', { limit: limit || 4 }).then(
+      function (list) {
+        var out = [];
+        (list || []).forEach(function (t) {
+          var u = String((t && t.user) || '').replace(/\s+/g, ' ').trim();
+          var a = String((t && t.assistant) || '').replace(/\s+/g, ' ').trim();
+          if (u) out.push('他：' + u.slice(0, 100));
+          if (a) out.push('你：' + a.slice(0, 100));
+        });
+        // 只留最后几行 —— 给的是"刚才在聊什么"，不是聊天记录
+        return out.slice(-4).join('\n');
+      },
+      function () {
+        return '';
+      },
+    );
+  }
+
+  /**
    * 提示词 —— **实测定下来的，别随手改**。
    *
    * 【第一版为什么不行】它问的是"这张图上写着什么？用一句话原样说出来" —— 她的回答永远是
@@ -1104,8 +1134,11 @@
    *
    * 【为什么要给"上一次"】那是主人点名要的"根据之前的分析判断他在干嘛"：有了上一轮的结论，
    * 她才能说"刚才那页警告，你现在是去改配置了？"，而不是每轮都从零开始描述。
+   *
+   * 【为什么要给"他刚说了什么"】上面那个"上一次"是她自己看见的；这个是**主对话**里
+   * 主人刚说的话 —— 看图那条链看不到主对话，不给就永远只能猜。这是主人 2026-10-06 要的。
    */
-  function buildSeePrompt(n, cursor, prevSee) {
+  function buildSeePrompt(n, cursor, prevSee, talk) {
     var lines = [];
     lines.push(
       n === 1
@@ -1118,6 +1151,10 @@
         : '（最后那张图里没有圈 —— 截图那一刻他的鼠标不在这个窗口里。）',
     );
     if (prevSee) lines.push('上一次你看的时候，他是在：' + prevSee);
+    if (talk) {
+      lines.push('【背景】他刚跟你说过这些（只用来帮你判断他在干嘛，别在回答里复述）：');
+      lines.push(talk);
+    }
     lines.push('回答下面几件事，每件占一行，不要客套、不要复述我这句话：');
     lines.push('第一行「在做什么」：他正在看什么、干什么，一句话。');
     lines.push('第二行「重点」：最近这张里最该注意的那一处，把那上面写的字照抄出来。');
@@ -1162,7 +1199,6 @@
 
     var last = list[list.length - 1];
     var size = (last.w || 0) + 'x' + (last.h || 0);
-    var prompt = buildSeePrompt(list.length, last.cursor, prevSee);
     // 验收要看的就是这几项（几张、复用了几个、有没有圈、她回了什么）。**不存图本身**
     window.__DSC_LAST_SHOT__ = {
       count: list.length,
@@ -1173,35 +1209,42 @@
       at: Date.now(),
       text: '',
       fileIds: [],
+      talk: '',
       err: '',
     };
     log(
       'SEE 收 ' + list.length + ' 张（复用 ' + reuse + ' · 新传 ' + (list.length - reuse) + '）' +
         '最近一张 ' + size + (last.cursor ? ' 有圈' : ' 无圈'),
     );
-    return util
-      .seeImages(items, prompt, { namePrefix: 'dsc-screen-' })
-      .then(function (r) {
-        // 记下 seq → file_id：下一轮重叠的那几张就不必重传了。只留最近十几条，别让它无限长。
-        (r.fileIds || []).forEach(function (id, i) {
-          var seq = items[i] && items[i].shot ? items[i].shot.seq : null;
-          if (seq !== null && seq !== undefined) shotFileIds[seq] = id;
-        });
-        Object.keys(shotFileIds)
-          .map(Number)
-          .sort(function (a, b) {
-            return b - a;
-          })
-          .slice(12)
-          .forEach(function (k) {
-            delete shotFileIds[k];
+    // 【先取主对话最近几句再提问】她因此知道"他刚才问的是什么"，意图推测才不是瞎猜
+    return recentTalk(4).then(function (talk) {
+      window.__DSC_LAST_SHOT__.talk = talk;
+      log('SEE 背景对话 ' + (talk ? talk.split('\n').length + ' 行' : '（没拿到）'));
+      var prompt = buildSeePrompt(list.length, last.cursor, prevSee, talk);
+      return util
+        .seeImages(items, prompt, { namePrefix: 'dsc-screen-' })
+        .then(function (r) {
+          // 记下 seq → file_id：下一轮重叠的那几张就不必重传了。只留最近十几条，别让它无限长。
+          (r.fileIds || []).forEach(function (id, i) {
+            var seq = items[i] && items[i].shot ? items[i].shot.seq : null;
+            if (seq !== null && seq !== undefined) shotFileIds[seq] = id;
           });
-        var text = (r && r.text) || '';
-        window.__DSC_LAST_SHOT__.text = text;
-        window.__DSC_LAST_SHOT__.fileIds = r.fileIds || [];
-        log('SEE ok ' + text.slice(0, 90).replace(/\n/g, ' / '));
-        return invoke('dsc_screen_see', { text: text, size: size });
-      });
+          Object.keys(shotFileIds)
+            .map(Number)
+            .sort(function (a, b) {
+              return b - a;
+            })
+            .slice(12)
+            .forEach(function (k) {
+              delete shotFileIds[k];
+            });
+          var text = (r && r.text) || '';
+          window.__DSC_LAST_SHOT__.text = text;
+          window.__DSC_LAST_SHOT__.fileIds = r.fileIds || [];
+          log('SEE ok ' + text.slice(0, 90).replace(/\n/g, ' / '));
+          return invoke('dsc_screen_see', { text: text, size: size });
+        });
+    });
   }
 
   function reportTurn(userText) {
