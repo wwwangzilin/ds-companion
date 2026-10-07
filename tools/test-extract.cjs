@@ -158,5 +158,36 @@ console.log('\n[5] sessionFromUrl');
   else global.location = real;
 }
 
+console.log('\n[6] byCharacter —— 记忆归属（"夺舍"那个 bug 的正解）');
+{
+  const turns = [
+    { user: 'a1', assistant: 'A1', characterId: 'dsh-luna' },
+    { user: 'b1', assistant: 'B1', characterId: 'dsh-deepseek' },
+    { user: 'a2', assistant: 'A2', characterId: 'dsh-luna' },
+    { user: 'x', assistant: 'X' }, // 老留档：没有 characterId
+    { user: 'y', assistant: 'Y', characterId: '' },
+  ];
+  eq('只留露娜那两轮', EX.byCharacter(turns, 'dsh-luna').map((t) => t.user), ['a1', 'a2']);
+  eq(
+    '别人的一轮都不带',
+    EX.byCharacter(turns, 'dsh-deepseek').map((t) => t.user),
+    ['b1'],
+  );
+  // ★这两条是核心★
+  eq('认不出角色的轮次一律丢掉（绝不许猜归属）', EX.byCharacter(turns, 'dsh-luna').length, 2);
+  eq(
+    '要不到角色 → 空表（空 characterId 在注入侧是全局记忆，人人可见）',
+    EX.byCharacter(turns, ''),
+    [],
+  );
+  eq('want 是空白字符串也一样', EX.byCharacter(turns, '   '), []);
+  eq('空素材不炸', EX.byCharacter(null, 'dsh-luna'), []);
+  eq(
+    '返回的是原对象（ref 那些字段不能被复制丢掉）',
+    EX.byCharacter([{ characterId: 'x', ref: 'r' }], 'x')[0].ref,
+    'r',
+  );
+}
+
 console.log('\n' + (fail ? `✗ ${fail} 项失败` : `✓ 全部通过（${pass} 项）`));
 process.exit(fail ? 1 : 0);

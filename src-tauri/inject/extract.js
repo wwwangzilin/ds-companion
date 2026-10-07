@@ -62,18 +62,47 @@
     return [];
   }
 
-  /** 从磁盘留档里取最近若干轮（页面刷新后仍能整理） */
-  async function recentFromArchive(limit) {
+  /**
+   * 只留下**属于 `want` 这个角色**的轮次。
+   *
+   * 【为什么必须有这一步】整理是**延后**触发的（每 N 轮），素材却可能横跨好几个角色，
+   * 而抽出来的记忆只盖一个 characterId。不过滤就必然把 A 说的话记到 B 名下 ——
+   * 而 B 下一轮注入时会把带自己名字的记忆全读出来，表现就是"换了角色却被夺舍"
+   * （主人报的那个 bug：跟露娜聊的"尾巴绕手腕"，被记成了 DeepSeek 娘的）。
+   *
+   * 【认不出角色的轮次一律丢掉】老留档、页面刷新前录的留痕都没有 characterId。
+   * 宁可这一轮不整理，也绝不能猜一个归属 —— 猜错就是把话安到别人头上。
+   * `want` 为空时同样返回空表：空 characterId 在注入侧等于**全局记忆**，人人可见，
+   * 比记错人还糟（见 memory.rs 的可见性语义）。
+   */
+  function byCharacter(turns, want) {
+    var w = String(want || '').trim();
+    if (!w) return [];
+    return (turns || []).filter(function (t) {
+      return t && String(t.characterId || '').trim() === w;
+    });
+  }
+
+  /** 从磁盘留档里取最近若干轮（页面刷新后仍能整理），**只取属于这个角色的**
+   *
+   * 【为什么必须传 wantId 进来】壳的留档（`chat_recent`）每行**是带 characterId 的**，
+   * 而这里原来只留了 `character`（一个给人看的显示名）就把 id 丢了 —— 于是素材是
+   * 跨角色的最近 12 轮，整理时再统一盖上"整理那一刻的人设"，必然错位。
+   */
+  async function recentFromArchive(limit, wantId) {
     try {
       var rows = await invoke('chat_recent', { limit: limit });
       if (!Array.isArray(rows)) return [];
-      return rows.map(function (r) {
+      var out = rows.map(function (r) {
         return {
           user: r.user || '',
           assistant: r.assistant || '',
+          // 这一轮属于哪个角色 —— 过滤和归属都要用它，别再丢
+          characterId: r.characterId || '',
           ref: (r.day || '') + ' ' + (r.clock || '') + ' · ' + (r.character || '角色'),
         };
       });
+      return byCharacter(out, wantId);
     } catch (e) {
       log('EXTRACT 读留档失败：' + e);
       return [];
@@ -281,19 +310,8 @@
       if (!util || typeof util.completion !== 'function') {
         throw new Error('deepseek-client 没加载');
       }
-      var session = pickSession(o.sessionId);
-      var fromArchive = false;
-      if (!session || !session.turns.length) {
-        // 页面刚刷新过、内存里没留痕：用磁盘上的留档兜底
-        // （不留档的话"刷新一下就不能整理了"，这是实测踩过的）
-        var archived = await recentFromArchive(12);
-        if (!archived.length) {
-          throw new Error('没有可整理的对话 —— 先在 DeepSeek 窗口里正常聊几句再点');
-        }
-        session = { id: '(来自留档)', turns: archived, fromUrl: false };
-        fromArchive = true;
-        log('EXTRACT 内存里没有留痕，改用磁盘留档 ' + archived.length + ' 轮');
-      }
+      // 【先把"这批记忆归谁"定下来，再去挑素材】以前是反的：先拿**跨角色**的素材、
+      // 最后才盖一个"整理那一刻的人设"的章 —— 两者一错开，话就记到别人名下了。
       // 归属必须问 Rust：页面里的 CFG 只是推过来的副本，推送丢失/页面正在导航时
       // 会过期，过期就会把记忆挂到已经换掉的那个角色名下（实测踩过一次，
       // 界面显示「三千代」而抽出来的记忆带的是「露娜」）。
@@ -303,6 +321,33 @@
         if (fresh && typeof fresh === 'object') c = Object.assign({}, c, fresh);
       } catch (e) {
         /* 拿不到就退回页面副本，别因为这一下整个整理失败 */
+      }
+      var want = String(c.personaId || '').trim();
+      // 【认不出角色就别整理】空 characterId 在注入侧 = **全局记忆**，所有角色都看得见 ——
+      // 那比"记错人"还严重。宁可这一轮什么都不抽，也不写一条谁都能看见的记忆。
+      if (!want) {
+        throw new Error('认不出当前角色（personaId 是空的）—— 这次不整理，免得多出一条全局记忆');
+      }
+
+      var session = pickSession(o.sessionId);
+      // 同一条 DeepSeek 会话里换过人设的话，内存留痕是**混的** —— 只取属于当前角色的那些
+      if (session && session.turns.length) {
+        var mine = byCharacter(session.turns, want);
+        session = mine.length ? { id: session.id, turns: mine, fromUrl: session.fromUrl } : null;
+      }
+      var fromArchive = false;
+      if (!session || !session.turns.length) {
+        // 页面刚刷新过、内存里没留痕（或者这段会话里的话不是当前角色说的）：
+        // 用磁盘留档兜底 —— 但**只取这个角色的轮次**
+        var archived = await recentFromArchive(12, want);
+        if (!archived.length) {
+          throw new Error(
+            '最近的对话里没有属于「' + (c.personaName || want) + '」的轮次 —— 先在窗口里正常聊几句再点',
+          );
+        }
+        session = { id: '(来自留档)', turns: archived, fromUrl: false };
+        fromArchive = true;
+        log('EXTRACT 内存里没有留痕（或不是这个角色说的），改用磁盘留档 ' + archived.length + ' 轮');
       }
       var dump = buildDump(session.turns);
       if (!dump.trim()) throw new Error('对话太短，没什么可整理');
@@ -315,7 +360,9 @@
       // 走 ask：按用途分会话 + 接着上一条往下写 + 攒够次数换新会话（失败重试也在里面）
       var r = await util.ask('memory', prompt);
 
-      var items = parseItems(r.text, c.personaId || '');
+      // 盖的就是上面**筛素材时用的那个角色** —— 不再重新读一次 c.personaId（那正是
+      // "素材是 A 的、章盖成 B"的老写法）。`|| ''` 也去掉了：空 = 全局记忆，绝不能出现。
+      var items = parseItems(r.text, want);
       // 溯源：每条记忆记下"从哪段对话抽出来的"，主人问起来翻得到原话
       var last = session.turns[session.turns.length - 1] || {};
       var ref = last.ref || '';
@@ -367,6 +414,7 @@
 
   root.__DSC_EXTRACT_UTIL__ = {
     recentFromArchive: recentFromArchive,
+    byCharacter: byCharacter,
     buildDump: buildDump,
     buildPrompt: buildPrompt,
     existingText: existingText,

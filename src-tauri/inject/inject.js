@@ -1623,7 +1623,14 @@
   function rememberTurn(sessionId, userText, assistantText) {
     if (!sessionId || !assistantText) return;
     var t = transcripts[sessionId] || (transcripts[sessionId] = []);
-    t.push({ user: String(userText || '').slice(0, 2000), assistant: String(assistantText).slice(0, 4000) });
+    t.push({
+      user: String(userText || '').slice(0, 2000),
+      assistant: String(assistantText).slice(0, 4000),
+      // 【这一轮是哪个角色说的】整理记忆时"这批归谁"就靠它。以前完全没记，于是只能拿
+      // **整理那一刻的人设**去盖 —— 而整理是延后触发的（每 N 轮），素材一旦跨角色就盖错：
+      // 跟露娜聊出来的「尾巴绕手腕」被记成了 DeepSeek 娘的（主人报的"夺舍"，实测 3/17 条）。
+      characterId: (CFG && CFG.personaId) || '',
+    });
     while (t.length > TRANSCRIPT_LIMIT) t.shift();
     stats.turnsRemembered = (stats.turnsRemembered || 0) + 1;
     // 只留**最近一条**：隐藏链组 prompt 只要"刚刚聊了什么"，攒历史没意义（还越背越重）
