@@ -78,9 +78,19 @@ const main = await findTarget('deepseek.com');
 // 【为什么要先开一条会话】刚启动时页面停在首页（`https://chat.deepseek.com/`），
 // 一条消息都没有 —— 那探针只会回 "0 个消息格"，什么也说明不了。
 // 挑**真人会话**（跳过带 `.dsc-sys-session` 的，那些是我们自己开的），只做导航，不动内容。
+// 给了命令行参数就直接开那一条（会话 id 或 `/a/chat/s/<id>`）—— 想复看某条特定消息时用得上，
+// 也免得在 PowerShell 里内联 JS（多行内联的引号会被吃掉，这坑踩过一次）。
+const want = process.argv[2] || '';
+const wantHref = want ? (want.startsWith('/') ? want : '/a/chat/s/' + want) : '';
 const nav = await evalIn(
   main,
   `(() => {
+     const WANT = ${JSON.stringify(wantHref)};
+     if (WANT) {
+       if (location.pathname.indexOf(WANT) === 0) return JSON.stringify({ already: true, going: WANT });
+       location.assign(WANT);
+       return JSON.stringify({ going: WANT, title: '（按参数指定）' });
+     }
      const links = Array.from(document.querySelectorAll('a[href*="/a/chat/s/"]'))
        .filter((a) => !a.classList.contains('dsc-sys-session'));
      const withText = links.filter((a) => (a.innerText || '').trim().length > 0);
@@ -94,8 +104,10 @@ const nav = await evalIn(
 const n = JSON.parse(String(nav));
 if (n.err) {
   console.log('[开会话] ' + n.err);
+} else if (n.already) {
+  console.log('[开会话] 已经在这个会话上了');
 } else {
-  console.log('[开会话] ' + n.title + '  →  ' + n.going);
+  console.log('[开会话] ' + (n.title || '') + '  →  ' + n.going);
 }
 
 // 等消息渲染出来（导航之后 CDP 目标还是同一个，等 DOM 就行）
