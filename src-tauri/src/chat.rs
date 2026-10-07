@@ -71,11 +71,23 @@ pub fn safe_day(day: &str) -> String {
 }
 
 pub fn render_block(t: &Turn) -> String {
+    // 【为什么末尾要多写一个角色 id】整理记忆时"这批记忆归谁"只能靠 id：
+    // 显示名会重名、会改名，而且**每次换人设都可能换名字**。以前只写名字，
+    // `chat_recent` 读回来 character_id 永远是空 —— 那边就只能拿"整理那一刻的人设"去盖，
+    // 于是把 A 说的话记到了 B 名下（主人报的"换角色就被夺舍"）。
+    // 【老文件】没有这一段 → 读回来是空串 → 那边会**拒绝猜归属**（宁可不整理）。
+    let cid = t.character_id.trim();
+    let head_tail = if cid.is_empty() {
+        String::new()
+    } else {
+        format!(" · {cid}")
+    };
     format!(
-        "## {} · {} · {}\n**主人**：{}\n**{}**：{}\n",
+        "## {} · {} · {}{}\n**主人**：{}\n**{}**：{}\n",
         if t.clock.trim().is_empty() { "--:--" } else { t.clock.trim() },
         if t.character.trim().is_empty() { "角色" } else { t.character.trim() },
         clip_chars(&t.session, 12),
+        head_tail,
         t.user.trim(),
         if t.character.trim().is_empty() { "她" } else { t.character.trim() },
         t.assistant.trim()
@@ -110,7 +122,7 @@ pub fn parse_day(text: &str) -> Vec<Turn> {
             if let Some(t) = cur.take() {
                 out.push(t);
             }
-            // "21:03 · 露娜模式 · a1b2c3d4"
+            // "21:03 · 露娜模式 · a1b2c3d4" 或 "… · a1b2c3d4 · dsh-luna"
             let parts: Vec<&str> = rest.split('·').map(|s| s.trim()).collect();
             let mut t = Turn::default();
             if let Some(c) = parts.first() {
@@ -121,6 +133,10 @@ pub fn parse_day(text: &str) -> Vec<Turn> {
             }
             if let Some(c) = parts.get(2) {
                 t.session = (*c).to_string();
+            }
+            // 第 4 段是角色 id（后加的；老文件没有 → 留空 → 整理时拒绝猜归属）
+            if let Some(c) = parts.get(3) {
+                t.character_id = (*c).to_string();
             }
             cur = Some(t);
             continue;

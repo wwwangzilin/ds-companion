@@ -2908,8 +2908,121 @@
     }
   }
 
+  // ═══════════════ 换了人设：提醒"这条会话里还留着上一位的话" ═══════════════
+  //
+  // 【为什么需要这条】人设是**全局开关**，不跟会话绑定 —— 在同一条 DeepSeek 会话里换人设，
+  // 新角色**不用靠记忆**就直接读得到上一位说过的话（那些话就在当前上下文里）。
+  // 主人报的"换个角色就被夺舍"，一半是这个、一半是记忆归属（那个已经修了）。
+  //
+  // 【为什么只提醒，不自动开新会话】自动开新会话会把他正在聊的内容掀掉 —— 那比串味更烦。
+  // 所以选了最轻的一档：提醒一句，开不开新会话他自己定。
+  //
+  // 【判定靠什么】壳的聊天留档（`chat_recent`）每一轮**都带 characterId**，按**当前会话 id**
+  // 筛一下就知道这条会话里都有谁说过话。**不能只靠内存留痕**（transcripts）：刷新即失，
+  // 而"刷新之后接着换人设"恰恰是最常走的那条路。
+  var lastPersonaId = String((CFG && CFG.personaId) || '');
+  var noticeTimer = 0;
+
+  function showNotice(text) {
+    try {
+      var el = document.getElementById('dsc-notice');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'dsc-notice';
+        el.addEventListener('click', function () {
+          if (el.parentNode) el.parentNode.removeChild(el);
+        });
+        (document.body || document.documentElement).appendChild(el);
+      }
+      // 样式写在元素上：注入页不方便引外部 CSS，而且这几行碰不到上游任何东西
+      el.setAttribute(
+        'style',
+        'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483000;' +
+          'max-width:min(680px,86vw);padding:10px 14px;border-radius:10px;cursor:pointer;' +
+          'font-size:13px;line-height:1.5;color:#f3f4f6;background:rgba(28,28,32,.94);' +
+          'border:1px solid rgba(255,255,255,.14);box-shadow:0 8px 28px rgba(0,0,0,.35);' +
+          'font-family:inherit;user-select:none',
+      );
+      el.textContent = text;
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(function () {
+        var e2 = document.getElementById('dsc-notice');
+        if (e2 && e2.parentNode) e2.parentNode.removeChild(e2);
+      }, 15000);
+    } catch (e) {
+      /* 提醒是锦上添花，崩了也不能影响别处 */
+    }
+  }
+
+  /**
+   * 留档里那条会话是不是当前这一条。
+   *
+   * 【为什么要这么绕】`chat.rs` 的 `render_block` 把会话 id **只写前 12 位**、还带个省略号
+   * （`6f9b851e-528…`）—— 直接 `indexOf` 比不中（省略号不在真 id 里）。所以先剥掉省略号，
+   * 再两边互相包含地比。
+   */
+  function sameSession(stored, cur) {
+    var s = String(stored || '')
+      .replace(/…/g, '')
+      .trim();
+    var c = String(cur || '').trim();
+    if (!s || !c) return false;
+    return c.indexOf(s) === 0 || s.indexOf(c) === 0;
+  }
+
+  /** 这条会话里说过话的、**不是** nextName 的那些角色名（空数组 = 这条会话是干净的） */
+  function foreignSpeakers(sid, nextName, rows) {
+    var names = [];
+    (rows || []).forEach(function (r) {
+      if (!sameSession(r && r.session, sid)) return;
+      // 【为什么按名字算，而不是按 characterId】留档的 Markdown 头以前**只写显示名**
+      // （id 是后来才加进格式的，老记录一律没有）。这条提醒是给人看一眼的，名字够用；
+      // 而**整理记忆**那条路必须拿 id —— 那边认不出就宁可不整理，绝不猜。
+      var nm = String((r && r.character) || '').trim();
+      if (!nm || nm === nextName) return;
+      if (names.indexOf(nm) < 0) names.push(nm);
+    });
+    return names;
+  }
+
+  function checkPersonaSwitch(next) {
+    var nextId = String((next && next.personaId) || '');
+    var nextName = String((next && next.personaName) || '');
+    var prevId = lastPersonaId;
+    lastPersonaId = nextId;
+    // 第一次拿到配置（页面刚起来）不算"换了"；两边有一个为空也无从比较
+    if (!prevId || !nextId || prevId === nextId) return;
+    var sid = currentSessionId();
+    if (!sid) return; // 首页 / 新对话：这条会话里没话，串不了
+    try {
+      invoke('chat_recent', { limit: 60 })
+        .then(function (rows) {
+          var names = foreignSpeakers(sid, nextName, rows);
+          if (!names.length) return;
+          showNotice(
+            '换了人设 —— 这条会话里还留着「' +
+              names.join('、') +
+              '」说过的话，「' +
+              (nextName || '新角色') +
+              '」会读到。想干净就开一条新会话。',
+          );
+          log('persona-switched ' + prevId + ' → ' + nextId + '；这条会话里有 ' + names.join('、'));
+        })
+        .catch(function () {});
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  // 验收用：现在挂着的那条提醒的文案（没有就是空串）
+  window.__DSC_NOTICE_TEXT__ = function () {
+    var el = document.getElementById('dsc-notice');
+    return el ? el.textContent : '';
+  };
+
   // ─────────────────────── 配置更新 ───────────────────────
   window.__DSC_SET_CONFIG__ = function (next) {
+    checkPersonaSwitch(next);
     CFG = next || { cadence: 'off', personaText: '' };
     // 配置推送里没有实时的任务模式（那是每轮算的），所以刷新配置时先当日常态；
     // 下一轮 reportTurn 会立刻把真实值带回来。不清掉的话，旧值会一直粘着。
