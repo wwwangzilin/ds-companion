@@ -41,6 +41,7 @@
     "allow-dsc-avatar-get",
     "allow-dsc-avatar-toggle",
     "allow-dsc-sync-pack",
-    "allow-dsc-sync-apply"
+    "allow-dsc-sync-apply",
+    "allow-dsc-pet-stage"
   ]
 }

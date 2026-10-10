@@ -836,6 +836,16 @@
               <span class="track"><span class="knob"></span></span>
               <span class="switch-label">播动作素材（关掉就用立绘）</span>
             </label>
+            <label class="switch" title="开着的时候她接得住鼠标：能拖起来甩出去（松手会按重力落下、碰屏幕边弹）、点一下她会有回应、右键弹出动作菜单。判定按她身体的实际范围，她周围那圈透明区域照旧点一下就穿过去。关掉 = 永远穿透，回到以前那样。">
+              <input type="checkbox" id="pet-interact" />
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">让她接得住鼠标（拖 / 点 / 右键菜单）</span>
+            </label>
+            <label class="switch" title="开着的时候她会自己找事做：待机里偶尔换个动作、转过头、自己在屏幕上走两步。关掉 = 只在原地待机，不再自己动。不影响你点她、拖她、右键点播 —— 那些是你触发的。">
+              <input type="checkbox" id="pet-wander" />
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">让她自己动（换动作 / 走两步）</span>
+            </label>
             <div class="gates">
               <div class="gate">
                 <span class="gate-label">待在哪个角</span>
@@ -849,8 +859,10 @@
               </div>
             </div>
             <p class="hint">
-              她默认<b>点一下就穿过去</b> —— 鼠标落在她身上时，点到的其实是她身后的窗口。
-              这一条是刻意的：一个置顶窗口绝不该挡住你点任何东西。
+              她默认<b>接得住鼠标</b>：拖起来松手会按重力落下去、碰到屏幕边会弹；点一下她有回应；
+              右键弹出动作菜单（待机 / 转向 / 拖动 / 点击回应 / 走动 / 随机动作 / 事件 / 回角落）。
+              判定按<b>她身体的实际范围</b> —— 她周围那圈透明区域照旧点一下就穿过去，不会挡你操作。
+              想彻底不让她抢鼠标，就把上面那个开关关掉。
             </p>
             <p class="hint">
               表情会跟着状态走（困了就眯眼、生气就竖眉毛）；头顶那条小字是她手上正在做的事。

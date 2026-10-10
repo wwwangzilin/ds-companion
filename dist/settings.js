@@ -1096,13 +1096,48 @@ async function refreshPet() {
   // 页面这边不用管"有没有素材"，只画主人的选择。
   const anim = c.petAnim !== false; // 缺字段当开（和壳里的 serde 默认一致）
   $('pet-anim').checked = anim;
+  // 两个行为开关：吃不吃鼠标、会不会自己动（壳里的字段说明见 config.rs）
+  const interact = c.petInteract !== false;
+  const wander = c.petWander !== false;
+  $('pet-interact').checked = interact;
+  $('pet-wander').checked = wander;
   const corner = String(c.petCorner || 'br').toLowerCase();
   const btn =
     document.querySelector(`#pet-corner button[data-v="${corner}"]`) ||
     document.querySelector('#pet-corner button[data-v="br"]');
   placePill('pet-corner-pill', btn);
-  window.__DSC_PET_CFG__ = { enabled: on, corner, anim };
+  window.__DSC_PET_CFG__ = { enabled: on, corner, anim, interact, wander };
 }
+
+// 「接得住鼠标」：这是桌宠窗和设置窗之间唯一的一条"行为"开关 —— 写进配置之后
+// 桌宠那边下一拍读到 `interact` 就不再上报命中框，壳于是永远穿透。
+$('pet-interact').addEventListener('change', async (e) => {
+  const want = e.target.checked;
+  try {
+    await patchCfg({ petInteract: want });
+    toast(
+      want
+        ? '她能接鼠标了 —— 拖、点、右键都行；她周围那圈空白还是穿过去的'
+        : '她不接鼠标了 —— 点一下就穿过去',
+    );
+  } catch (err) {
+    e.target.checked = !want;
+    fail(err);
+  }
+  await refreshPet().catch(fail);
+});
+
+$('pet-wander').addEventListener('change', async (e) => {
+  const want = e.target.checked;
+  try {
+    await patchCfg({ petWander: want });
+    toast(want ? '她开始自己找事做了' : '她只在原地待机了');
+  } catch (err) {
+    e.target.checked = !want;
+    fail(err);
+  }
+  await refreshPet().catch(fail);
+});
 
 $('pet-anim').addEventListener('change', async (e) => {
   const want = e.target.checked;

@@ -370,6 +370,8 @@
     // 只藏注入块，就只能改写文本，那会污染复制和"重新编辑发送"。所以从源头改顺序。
     body.prompt = body.prompt + '\n\n' + prefix;
     if (d.ok) stats.injected++;
+    // 主人的一轮开跑了 → 告诉壳"她在想"（桌宠据此播 events.workStatus 的 thinking 档）
+    stageSay('thinking');
     log(
       'INJECTED(' +
         via +
@@ -1281,6 +1283,17 @@
     });
   }
 
+  /** 报一档工作状态给壳（桌宠用来挑"她正在干活"的那一段动作）。
+   *  这条链是**纯通知**：没有权限、壳没开桌宠、命令还没注册……一律静默吞掉 ——
+   *  绝不能因为桌宠而影响对话。 */
+  function stageSay(stage) {
+    try {
+      invoke('dsc_pet_stage', { stage: stage })['catch'](function () {});
+    } catch (e) {
+      /* 桌宠不在也不该有任何动静 */
+    }
+  }
+
   function reportTurn(userText) {
     if (!CFG.stateEnabled) return;
     invoke('dsc_turn_report', {
@@ -1869,6 +1882,7 @@
       }
       healthBump('emptyReplies');
       publishHealth('empty');
+      stageSay('error');
       try {
         if (CFG.toolText && typeof window.__DSC_ON_EMPTY_REPLY__ === 'function') {
           window.__DSC_ON_EMPTY_REPLY__({
@@ -3719,6 +3733,9 @@
   };
 
   // 验收用：模拟"一轮说完了"（真的完成一轮要能解析出助手回复，脚本没法轻易造）
+  // 工具链要用的那一档通知（见 tool-loop.js 的 handleReply）
+  window.__DSC_STAGE_SAY__ = stageSay;
+
   window.__DSC_REPORT_TURN__ = function (userText) {
     reportTurn(userText);
     return true;

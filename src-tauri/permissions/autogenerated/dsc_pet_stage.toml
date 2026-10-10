@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-pet-stage"
+description = "Enables the dsc_pet_stage command without any pre-configured scope."
+commands.allow = ["dsc_pet_stage"]
+
+[[permission]]
+identifier = "deny-dsc-pet-stage"
+description = "Denies the dsc_pet_stage command without any pre-configured scope."
+commands.deny = ["dsc_pet_stage"]

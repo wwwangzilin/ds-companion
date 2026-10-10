@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-pet-hitbox"
+description = "Enables the dsc_pet_hitbox command without any pre-configured scope."
+commands.allow = ["dsc_pet_hitbox"]
+
+[[permission]]
+identifier = "deny-dsc-pet-hitbox"
+description = "Denies the dsc_pet_hitbox command without any pre-configured scope."
+commands.deny = ["dsc_pet_hitbox"]

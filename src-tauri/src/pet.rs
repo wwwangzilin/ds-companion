@@ -15,6 +15,8 @@
 //! 【为什么位置在 Rust 算】只有这几行，却要两处（托盘、设置页）都能改 ——
 //! 算一次、存在配置里，比两边各写一遍稳。
 
+use std::sync::Mutex;
+
 use crate::config;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -28,7 +30,9 @@ pub const H: f64 = 344.0;
 /// 离屏幕边缘留多少。贴死边看着像卡住了。
 const MARGIN: f64 = 24.0;
 /// 任务栏高度（逻辑像素）。Tauri 不会告诉我们任务栏在哪一边，就按最常见的下方算。
-const TASKBAR: f64 = 48.0;
+/// `pub` 是因为 pet_move 那边的抛掷物理也要用它当地板线 —— 两处必须是同一个数，
+/// 不然她会在空中停住（一个说 1080、一个说 1032）。
+pub const TASKBAR: f64 = 48.0;
 
 pub const WINDOW_LABEL: &str = "pet";
 /// 配置里那四个角。右下是默认 —— 屏幕右下角是"眼睛余光能扫到、但写字时挡不着"的地方。
@@ -189,6 +193,9 @@ pub async fn open(app: AppHandle) -> Result<(), String> {
                 // Tauri 的 skip_taskbar 在这台机器上没生效（见 win_style 里的说明），自己动手
                 hide_from_taskbar(&win);
                 place(&handle);
+                // 「手脚」那一拍：光标命中 → 决定吃不吃鼠标；拖拽跟手；抛掷物理；自己走
+                crate::pet_move::set_interact(crate::config::load().pet_interact);
+                crate::pet_move::ensure_loop(&handle);
                 crate::shell_log("[pet] window opened（点击穿透已开）");
             }
             Err(e) => crate::shell_log(&format!("[pet] window FAILED: {e}")),
@@ -200,6 +207,7 @@ pub async fn open(app: AppHandle) -> Result<(), String> {
 
 /// 关掉桌宠窗口（配置里的开关是另一回事：这里只负责窗口）。
 pub fn close(app: &AppHandle) {
+    crate::pet_move::stop_loop();
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         let _ = win.close();
         crate::shell_log("[pet] window closed");
@@ -231,6 +239,9 @@ pub fn ping(app: &AppHandle) {
 /// 桌宠需不需要重新摆位（设置里换了角落）。
 pub fn on_corner_changed(app: &AppHandle) {
     if app.get_webview_window(WINDOW_LABEL).is_some() {
+        // 正在走/飞的时候挪窗口，物理会拿一个跳变后的位置继续算（她会"瞬移"）——
+        // 换角落就当"重新摆一次"，先把动作停了
+        crate::pet_move::stop_motion();
         place(app);
     }
 }
@@ -248,6 +259,172 @@ pub fn on_corner_changed(app: &AppHandle) {
 
 /// 素材目录那一层（先只有 dsh-pet 这一套，将来可以有别的宠物包）
 pub const CLIP_POOL: &str = "dsh-pet";
+
+// ─────────────────────── 工作状态（她此刻在替你干什么） ───────────────────────
+//
+// 【为什么要壳来记这一档】上游 dsh-pet 的 `events.workStatus` 是"她正在干活"的六档动画
+// （思考 / 干活 / 整理 / 等你点头 / 搞定 / 出错），触发源是 DSH 的会话事件。这边对应的是
+// 注入层那几个天然节点：一次请求发出去 = 思考、工具开跑 = 干活、工具回来 = 整理、
+// 一轮干净收尾 = 搞定、空回复/失败 = 出错。档位由**注入层**报上来（`dsc_pet_stage`），
+// 壳只负责记着、过期丢掉、并在桌宠状态里带出去。
+//
+// 【为什么要有保鲜期】页面可能崩、可能被 F5、可能报了一次"干活"就再没下文 ——
+// 一个永远停在"干活"的档位会让她一直循环播忙碌的动作。超过这个时间就当没有。
+const STAGE_TTL_MS: u64 = 120_000;
+
+static STAGE: Mutex<Option<(String, u64)>> = Mutex::new(None);
+
+/// 记一档工作状态（注入层报上来的）。空串 = 她闲下来了（把档位清掉）。
+pub fn set_stage(raw: &str) {
+    let s = raw.trim();
+    if s.is_empty() {
+        // 空串是**合法的"空闲"**（页面/状态里空闲就是空串），别当成"非法值"忽略掉：
+        // 忽略的话她会一直卡在上一档上（比如"干活"）直到保鲜期过 —— 那段时间她一直在忙。
+        *STAGE.lock().unwrap() = None;
+        return;
+    }
+    let ok = matches!(
+        s,
+        "thinking" | "working" | "result" | "waiting" | "success" | "error"
+    );
+    if !ok {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    *STAGE.lock().unwrap() = Some((s.to_string(), now));
+}
+
+/// 当前该播哪一档（空串 = 空闲）。
+///
+/// 【为什么"等你点头"排在最前】提案箱里躺着一条待审的提案时，她该做的是**站着等你**，
+/// 而不是继续播"干活"—— 那个状态要主人动手才能往下走，跟 TTL 也没关系（你去忙别的，
+/// 它就一直挂着，这是对的）。
+pub fn stage() -> String {
+    if let Some(id) = crate::personas::effective_persona(crate::config::load().active_persona.as_deref())
+        .map(|p| p.id)
+        .or_else(|| Some("dsh-deepseek".to_string()))
+    {
+        if crate::propose::list(&id).iter().any(|p| p.status == "pending") {
+            return "waiting".into();
+        }
+    }
+    let g = STAGE.lock().unwrap();
+    match g.as_ref() {
+        Some((s, at)) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            if now.saturating_sub(*at) <= STAGE_TTL_MS {
+                s.clone()
+            } else {
+                String::new()
+            }
+        }
+        None => String::new(),
+    }
+}
+
+
+// ─────────────────────── 动作池（从 dsh-pet 摘的配置） ───────────────────────
+//
+// 【为什么抄一份配置进仓库】上游把池子写在 `assets/config.jsonc` 里（idle/turn/drag/clicks/
+// moves/categories/events + 权重），那是**菜单树、随机链、事件档位的唯一事实来源**。
+// 池子不跟素材一起下（素材 52 MB 不进仓库，配置才 4 KB），所以这里放一份摘录：
+// `src-tauri/assets/pet-pools.json`，由上游那份去注释后取 animations + animationWeights 两段。
+// 版权与出处见 NOTICE（MIT）。上游改了名字/权重，这里要跟着改 —— 认得出来的名字才播得出来。
+const POOLS_JSON: &str = include_str!("../assets/pet-pools.json");
+
+/// 池子过滤到**本地真装了**的素材。
+///
+/// 【为什么要过滤】"名字即文件名"：菜单里列出没下的动作，点下去只会静默失败
+/// （上游注释原话：404 → 加载失败 → 表现成"点了没反应"）。宁可菜单短一点。
+/// 只下第一批 6 段时，菜单里就只有 6 个能点的名字，装了全量自然全出来。
+pub fn pools_for(installed: &[String]) -> serde_json::Value {
+    use serde_json::{json, Value};
+    let raw: Value = serde_json::from_str(POOLS_JSON).unwrap_or(Value::Null);
+    let has = |n: &str| installed.iter().any(|x| x == n);
+    let keep = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .filter(|s| has(s))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let mut cats: Vec<Value> = Vec::new();
+    if let Some(arr) = raw["categories"].as_array() {
+        for c in arr {
+            let actions = keep(&c["actions"]);
+            if actions.is_empty() {
+                continue; // 一个都没装就不必出现在菜单里
+            }
+            cats.push(json!({
+                "id": c["id"],
+                "weight": c["weight"],
+                "noMirror": c["noMirror"].as_bool().unwrap_or(false),
+                "actions": actions,
+            }));
+        }
+    }
+
+    let mut moves: Vec<Value> = Vec::new();
+    if let Some(arr) = raw["moves"]["actions"].as_array() {
+        for m in arr {
+            if m["name"].as_str().map(&has).unwrap_or(false) {
+                moves.push(m.clone());
+            }
+        }
+    }
+
+    // 事件档位：值可能是单个名字，也可能是"档内候选数组"（上游两种都允许）
+    let mut events = serde_json::Map::new();
+    if let Some(obj) = raw["events"].as_object() {
+        for (k, v) in obj {
+            let slots: Vec<Value> = v
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|slot| match slot {
+                            Value::String(s) => has(s).then(|| json!(s)),
+                            Value::Array(arr) => {
+                                let inner: Vec<String> = arr
+                                    .iter()
+                                    .filter_map(|x| x.as_str())
+                                    .filter(|s| has(s))
+                                    .map(str::to_string)
+                                    .collect();
+                                (!inner.is_empty()).then(|| json!(inner))
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !slots.is_empty() {
+                events.insert(k.clone(), json!(slots));
+            }
+        }
+    }
+
+    json!({
+        "weight": raw["weight"].clone(),
+        "idle": keep(&raw["idle"]),
+        "turn": keep(&raw["turn"]),
+        "drag": keep(&raw["drag"]),
+        "clicks": keep(&raw["clicks"]),
+        "moves": { "default": raw["moves"]["default"].clone(), "actions": moves },
+        "categories": cats,
+        "events": events,
+    })
+}
 
 pub fn clip_dir() -> std::path::PathBuf {
     crate::personas::app_root().join("pets").join(CLIP_POOL)
@@ -562,5 +739,51 @@ mod tests {
         // （真实数据目录里有素材也不能影响这条断言，所以这里不读它的返回值内容。）
         let names = clip_names();
         assert!(names.iter().all(|n| !n.is_empty()), "名字不该有空串：{names:?}");
+    }
+
+    /// 池子必须**过滤到本地真装了的**素材：一个都没装时每个池子都该是空的。
+    ///
+    /// 【为什么这条重要】上游那 106 段素材不进仓库，谁装到哪一步都是可能的
+    /// （只下第一批 6 段 / 下了一半 / 全下）。菜单里列出没下的名字，点下去只会静默失败
+    /// —— 那比"菜单短一点"糟得多。
+    #[test]
+    fn pools_are_empty_when_nothing_is_installed() {
+        let p = pools_for(&[]);
+        assert_eq!(p["idle"].as_array().map(|a| a.len()), Some(0));
+        assert_eq!(p["turn"].as_array().map(|a| a.len()), Some(0));
+        assert_eq!(p["drag"].as_array().map(|a| a.len()), Some(0));
+        assert_eq!(p["clicks"].as_array().map(|a| a.len()), Some(0));
+        assert_eq!(p["moves"]["actions"].as_array().map(|a| a.len()), Some(0));
+        assert_eq!(p["categories"].as_array().map(|a| a.len()), Some(0));
+        assert_eq!(p["events"].as_object().map(|o| o.len()), Some(0));
+        // 权重是**配置**的一部分，跟装没装素材无关 —— 它必须原样留着，
+        // 否则页面拿不到 idle/turn/move 的比例（掷骰会退到写死的兜底值）
+        assert_eq!(p["weight"]["idle"].as_u64(), Some(10));
+    }
+
+    /// 装了什么就留什么（拿上游第一批那 6 段当样本）
+    #[test]
+    fn pools_keep_what_is_installed() {
+        let installed: Vec<String> = ["待机呼吸休闲", "点击回应-傲娇生气"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let p = pools_for(&installed);
+        assert_eq!(p["idle"], serde_json::json!(["待机呼吸休闲"]));
+        assert_eq!(p["clicks"], serde_json::json!(["点击回应-傲娇生气"]));
+        assert_eq!(p["turn"].as_array().map(|a| a.len()), Some(0), "没装的池子不该冒出来");
+        // 分类池是"整池过滤"：一个动作都没装的分类整个消失，不留一个点不动的分组
+        assert_eq!(p["categories"].as_array().map(|a| a.len()), Some(0));
+    }
+
+    /// 工作状态档位只认那六个（别的一律忽略 —— 它决定她播哪一段动画），空串 = 空闲
+    #[test]
+    fn stage_only_accepts_known_values() {
+        set_stage("乱写的");
+        assert_eq!(stage(), "", "不认识的档位不该落进状态里");
+        set_stage("working");
+        assert_eq!(stage(), "working");
+        set_stage("");
+        assert_eq!(stage(), "", "空串是合法的'空闲'，要能把档位清掉");
     }
 }

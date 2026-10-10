@@ -32,6 +32,7 @@ mod front;
 mod memory;
 mod personas;
 mod pet;
+mod pet_move;
 mod propose;
 mod roster;
 mod screen;
@@ -1223,6 +1224,9 @@ fn config_set(app: tauri::AppHandle, cfg: config::AppConfig) -> Result<(), Strin
     // 两个调用都是幂等的（窗口在就只摆位置，不在就不动），所以每次保存都叫一遍不亏。
     pet::sync_window(&app);
     pet::on_corner_changed(&app);
+    // 「接不接鼠标」这个开关是壳这边的一拍循环在读的 —— 配置一存就立刻生效，
+    // 不用等她下一拍（关掉时她下一拍会把自己的命中框收回去，壳就永远穿透了）
+    pet_move::set_interact(cfg.pet_interact);
     // 屏幕感知关掉的那一刻，把"上一轮注入过什么"也清掉 ——
     // 否则下次打开时，第一轮会因为"和上次一样"被去重吃掉，看着像没生效。
     if !cfg.screen_watch {
@@ -2023,18 +2027,28 @@ fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
     // 关掉开关之后桌宠不该再挂着上一句（那会让人以为它还在看）。
     let snap = screen::snapshot();
     let say = if cfg.screen_watch { snap.say } else { String::new() };
+    // 装了哪些动作素材（空表 = 没下过 → 页面老老实实用立绘那条老路）。
+    // 【开关长在这儿】`petAnim` 关掉就是一张空表：页面于是自动走立绘那条路 ——
+    // 不必在页面里再加一个分支（"没下素材"那条回落路径本来就要存在，复用即可）。
+    let clips = if cfg.pet_anim {
+        pet::clip_names()
+    } else {
+        Vec::new()
+    };
     serde_json::json!({
         "enabled": cfg.pet_enabled,
         "corner": pet::normalize_corner(&cfg.pet_corner),
-        // 装了哪些动作素材（空表 = 没下过 → 页面老老实实用立绘那条老路）。
-        // 只回名字，**不回内容** —— 内容由 dsc_pet_clip 按需取，见那里的说明。
-        // 【开关就长在这儿】`petAnim` 关掉 = 回一张空表，页面于是自动走立绘那条路 ——
-        // 不需要在页面里再加一个分支（那条回落路径本来就要为"没下素材"存在，复用即可）。
-        "clips": if cfg.pet_anim {
-            pet::clip_names()
-        } else {
-            Vec::new()
-        },
+        // 只回名字，**不回内容** —— 内容由 dsc_pet_clip 按需取，见那里的说明
+        "clips": clips,
+        // 动作池（idle/turn/drag/clicks/moves/categories/events），已经过滤到**本地真装了**
+        // 的那些名字。页面照它建右键菜单、掷骰子；窗口级的动作（走 / 拖）由页面点名。
+        "pools": pet::pools_for(&clips),
+        // 两个行为开关：吃不吃鼠标、会不会自己动（见 config.rs 的字段说明）
+        "interact": cfg.pet_interact,
+        "wander": cfg.pet_wander,
+        // 她此刻在替你干什么（thinking/working/result/waiting/success/error，空串 = 空闲）——
+        // 页面照它播 events.workStatus 那一档，见 pet.rs 的「工作状态」
+        "stage": pet::stage(),
         "id": view.id,
         "name": name,
         "variant": variant,
@@ -2070,8 +2084,56 @@ async fn dsc_pet_clip(name: String) -> serde_json::Value {
         .unwrap_or_else(|_| serde_json::json!({ "ok": false, "why": "取动作时内部出错" }))
 }
 
-/// 桌宠窗口此刻的实际样子（**只给设置窗口 / 验收用**）。
+/// 她身体在窗口里的矩形（CSS px，相对窗口左上角）—— 页面量出来报回来的。
 ///
+/// 【为什么这条命令必须存在】窗口开着 `ignore_cursor_events(true)` 时收不到任何鼠标消息，
+/// 页面也就永远不知道鼠标什么时候进到她身上 —— 这是个死锁（要收消息才能知道该不该收消息）。
+/// 所以判定只能放壳里：壳每拍问系统"光标在哪"，再拿这个矩形比。矩形是页面扫 alpha
+/// 量出来的那一个（见 dist/pet.js 的「她本人有多大」）。
+#[tauri::command]
+fn dsc_pet_hitbox(x: f64, y: f64, w: f64, h: f64) {
+    pet_move::set_hitbox(x, y, w, h);
+}
+
+/// 拖拽：`down = true` 按下（开始跟手），`false` 松开（够快就甩出去）。
+///
+/// 返回值给页面判"这一下算点了一下还是拖起来扔了"（见 pet_move::grab_end 的说明）。
+#[tauri::command]
+fn dsc_pet_grab(ox: f64, oy: f64, down: bool) -> serde_json::Value {
+    if down {
+        pet_move::grab_start(ox, oy);
+        serde_json::json!({ "moved": false, "threw": false })
+    } else {
+        pet_move::grab_end()
+    }
+}
+
+/// 让她自己在屏幕上走一段（`dx` 逻辑像素 / `ms` 毫秒）—— 距离和用时由页面按素材算好。
+#[tauri::command]
+fn dsc_pet_walk(dx: f64, ms: f64) {
+    pet_move::walk_by(dx, ms);
+}
+
+/// 回到配置里那个角落（右键菜单的「回角落」）。
+#[tauri::command]
+fn dsc_pet_home(app: tauri::AppHandle) {
+    pet_move::stop_motion();
+    pet::place(&app);
+}
+
+/// 注入层报"她此刻在干什么"（见 pet.rs 的「工作状态」一节）。
+///
+/// 【为什么由页面报、而不是壳自己推】这几档的天然触发点在**对话那一侧**：
+/// 一次请求发出去 = thinking、工具开跑 = working、工具回来 = result、
+/// 一轮干净收尾 = success、空回复/失败 = error。壳这边看不到这些瞬间。
+#[tauri::command]
+fn dsc_pet_stage(app: tauri::AppHandle, stage: String) {
+    pet::set_stage(&stage);
+    // 叫一声让她立刻演，不用等下一拍（tick 里读到新档位就播 events.workStatus）
+    pet::ping(&app);
+}
+
+/// 桌宠窗口此刻的实际样子（**只给设置窗口 / 验收用**）。///
 /// 【为什么要它】"置顶"和"点击穿透"是桌宠最要紧的两个属性，而它们只体现在 Win32 的
 /// 扩展样式位里 —— "窗口开出来了"证明不了她不会挡路。有了这条，验收脚本能直接断言
 /// `clickThrough=true`，而不是靠肉眼。
@@ -2092,6 +2154,8 @@ fn dsc_pet_window(app: tauri::AppHandle) -> serde_json::Value {
         "alwaysOnTop": win.is_always_on_top().unwrap_or(false),
         "exStyle": ex,
         "topmost": ex & pet::EX_TOPMOST != 0,
+        // 桌宠的「手脚」：吃不吃鼠标 / 在不在动 / 命中框多大（见 pet_move.rs）
+        "move": pet_move::debug_state(),
         // Tauri 的 set_ignore_cursor_events(true) 在 Windows 上就是加这两位
         "clickThrough": ex & pet::EX_TRANSPARENT != 0 && ex & pet::EX_LAYERED != 0,
         "toolWindow": ex & pet::EX_TOOLWINDOW != 0,
@@ -2853,6 +2917,11 @@ pub fn run() {
             dsc_avatar_matrix,
             dsc_pet_state,
             dsc_pet_clip,
+            dsc_pet_stage,
+            dsc_pet_hitbox,
+            dsc_pet_grab,
+            dsc_pet_walk,
+            dsc_pet_home,
             dsc_pet_window,
             dsc_sync_pack,
             dsc_sync_apply,

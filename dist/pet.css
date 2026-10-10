@@ -160,6 +160,54 @@ body.asleep #stage {
   opacity: 1;
 }
 
+/* ── 朝向翻转 ─────────────────────────────────────────────────────────
+   她朝右走的时候整层镜像。镜像中心是**元素中心**，而她在帧里基本居中（实测内容中心
+   317.5 对帧中心 320），所以翻过来位置几乎不动 —— 差那 2.5px 就当步态本身在晃。 */
+#stage.flip .anim,
+#stage.flip .layer {
+  transform: scaleX(-1);
+}
+
+/* ── 右键菜单 ─────────────────────────────────────────────────────────
+   她自己画的一层（不用系统菜单：桌宠窗只有 200×345，原生菜单会跑到窗口外面去，
+   样式也跟这套暗色气泡完全不搭）。菜单一开就盖住整个窗口，并且这段时间命中框报的是
+   **整个窗口** —— 否则光标一离开她身体，壳就把穿透打开，菜单立刻点不动了。 */
+#menu {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+  overflow-y: auto;
+  background: rgba(18, 14, 30, 0.94);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(167, 139, 250, 0.35);
+  font: 12.5px/1.3 "Microsoft YaHei", system-ui, sans-serif;
+  color: #ece8f8;
+  cursor: default;
+}
+#menu.on {
+  display: flex;
+}
+#menu .row {
+  padding: 7px 9px;
+  border-radius: 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 0 auto;
+}
+#menu .row:hover {
+  background: rgba(167, 139, 250, 0.22);
+}
+#menu .row.back {
+  color: #b9aee0;
+  border-bottom: 1px solid rgba(167, 139, 250, 0.22);
+  border-radius: 0;
+  margin-bottom: 2px;
+}
+
 /* 走视频那条路时，把 CSS 那个"呼吸"关掉 —— 素材自己就是动的（待机呼吸、打瞌睡…），
    再叠一层 transform 会变成两个频率打架，看着像在抖。
    立绘那条路照旧呼吸（静止的图不加这个就像贴纸）。 */

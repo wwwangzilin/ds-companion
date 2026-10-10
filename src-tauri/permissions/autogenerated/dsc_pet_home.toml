@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsc-pet-home"
+description = "Enables the dsc_pet_home command without any pre-configured scope."
+commands.allow = ["dsc_pet_home"]
+
+[[permission]]
+identifier = "deny-dsc-pet-home"
+description = "Denies the dsc_pet_home command without any pre-configured scope."
+commands.deny = ["dsc_pet_home"]

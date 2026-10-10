@@ -167,6 +167,15 @@
    *
    * @param {object} p { reply, userPrompt, sessionId, parentMessageId }
    */
+  /** 报一档工作状态给桌宠（和 inject.js 的 stageSay 同一条路，纯通知、失败即忽略） */
+  function stage(s) {
+    try {
+      if (typeof root.__DSC_STAGE_SAY__ === 'function') root.__DSC_STAGE_SAY__(s);
+    } catch (e) {
+      /* 桌宠没开也不该有任何动静 */
+    }
+  }
+
   async function handleReply(p) {
     var o = p || {};
     var cfgNow = cfg();
@@ -182,7 +191,12 @@
     }
 
     var calls = root.__DSC_PARSE_TOOL_CALLS__(text);
-    if (!calls.length) return { ok: false, reason: '没有调用' };
+    if (!calls.length) {
+      // 这一轮回复里没有工具调用 = 她干完了（桌宠据此播"搞定"那一档）
+      stage('success');
+      return { ok: false, reason: '没有调用' };
+    }
+    stage('working');
 
     // 体检：模型**真的吐了工具块**才算一次调用请求（能被解析出来才说明协议没写崩）
     hb('toolCalls', calls.length);
@@ -223,6 +237,7 @@
       'TOOL-LOOP 执行完毕 ' + call.name + ' ok=' + res.ok + ' 用时 ' + (now() - t0) + 'ms' +
         (res.ok ? '' : ' err=' + clip(res.error, 120)),
     );
+    stage(res.ok ? 'result' : 'error');
     hb('toolRuns');
     hset('lastToolName', String(call.name || '?'));
     if (!res.ok) {

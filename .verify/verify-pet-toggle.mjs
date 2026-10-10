@@ -96,6 +96,20 @@ const clickSwitch = `(async () => {
   return JSON.stringify({ checked: el.checked, cfg: !!cfg.petAnim });
 })()`;
 
+/** 通用版：点某个开关 → 读它自己和配置里对应的那个字段 */
+const clickSwitchOf = (id, field) => `(async () => {
+  const el = document.getElementById('${id}');
+  el.click();
+  await new Promise((r) => setTimeout(r, 700));
+  const cfg = await window.__TAURI_INTERNALS__.invoke('config_get');
+  return JSON.stringify({ checked: el.checked, cfg: cfg.${field} !== false });
+})()`;
+
+const readSwitch = (id, field) => `(async () => {
+  const cfg = await window.__TAURI_INTERNALS__.invoke('config_get');
+  return JSON.stringify({ checked: document.getElementById('${id}').checked, cfg: cfg.${field} !== false });
+})()`;
+
 const readPet = async (pet) =>
   JSON.parse(String(await evalIn(pet, `JSON.stringify(window.__DSC_PET_VIEW__ || null)`)));
 
@@ -145,6 +159,73 @@ try {
   console.log('[开回来] ' + JSON.stringify({ mode: petOn.mode, clips: petOn.clips }));
   checks.push(['开回来 → 素材回来了', petOn.clips >= 6, `${petOn.clips} 段`]);
   checks.push(['开回来 → 走回视频那条路', petOn.mode === 'video', petOn.mode]);
+  // ── 另外两个开关：接不接鼠标 / 会不会自己动 ──
+  // 【为什么要分开验】它们是**行为**开关：写进配置只是第一步，桌宠那边得真的读到、
+  // 真的改行为。所以两边都断言：配置里的值 + 桌宠报出来的值（pet_interact 那条会
+  // 直接决定壳吃不吃鼠标，错了的表现是"她挡路"或者"点不到她"）。
+  const beforeSwitch = async (id, field) =>
+    JSON.parse(String(await evalIn(settings, readSwitch(id, field))));
+  const petFlags = async () => {
+    await evalIn(pet, `(window.__DSC_PET_TICK__ ? window.__DSC_PET_TICK__() : null); true`);
+    await sleep(900);
+    return await readPet(pet);
+  };
+
+  const i0 = await beforeSwitch('pet-interact', 'petInteract');
+  const off1 = JSON.parse(String(await evalIn(settings, clickSwitchOf('pet-interact', 'petInteract'))));
+  checks.push(['「接得住鼠标」开关 → 配置写进去了', off1.cfg === !i0.cfg, `petInteract=${off1.cfg}`]);
+  const pv1 = await petFlags();
+  checks.push([
+    '「接得住鼠标」开关 → 桌宠那边真的读到了',
+    pv1.interact === off1.cfg,
+    `桌宠报 interact=${pv1.interact}，配置=${off1.cfg}`,
+  ]);
+  const on1 = JSON.parse(String(await evalIn(settings, clickSwitchOf('pet-interact', 'petInteract'))));
+  checks.push(['「接得住鼠标」开关 → 再点一下切回来', on1.cfg === i0.cfg, `petInteract=${on1.cfg}`]);
+
+  const w0 = await beforeSwitch('pet-wander', 'petWander');
+  const off2 = JSON.parse(String(await evalIn(settings, clickSwitchOf('pet-wander', 'petWander'))));
+  checks.push(['「自己动」开关 → 配置写进去了', off2.cfg === !w0.cfg, `petWander=${off2.cfg}`]);
+  const pv2 = await petFlags();
+  checks.push([
+    '「自己动」开关 → 桌宠那边真的读到了',
+    pv2.wander === off2.cfg,
+    `桌宠报 wander=${pv2.wander}，配置=${off2.cfg}`,
+  ]);
+  const on2 = JSON.parse(String(await evalIn(settings, clickSwitchOf('pet-wander', 'petWander'))));
+  checks.push(['「自己动」开关 → 再点一下切回来', on2.cfg === w0.cfg, `petWander=${on2.cfg}`]);
+  const i1 = await petFlags();
+  checks.push(['两个开关都回到原位', i1.interact === i0.cfg && i1.wander === w0.cfg, `interact=${i1.interact} wander=${i1.wander}`]);
+
+  // ── 工作状态那一档（events.workStatus）：她干活时的样子 ──
+  // 【为什么要真调一次】档位是**注入层**在对话那几个瞬间报给壳的（dsc_pet_stage）。
+  // 不真报一次，这条链就只能靠"读代码觉得对"。这里从主窗口报一个 success，
+  // 断言她换成"工作状态-*"里的某一段。
+  const workPool = await evalIn(
+    pet,
+    `(async () => {
+       const inv = window.__TAURI_INTERNALS__.invoke;
+       const s = await inv('dsc_pet_state', { have: null });
+       return JSON.stringify((s.pools && s.pools.events && s.pools.events.workStatus) || []);
+     })()`,
+  );
+  const pool = JSON.parse(String(workPool));
+  if (!pool.length) {
+    console.log('[跳过] 没装工作状态素材（fetch-pet-assets 还没下到那几段）');
+  } else {
+    await evalIn(
+      main,
+      `(async () => { await window.__TAURI_INTERNALS__.invoke('dsc_pet_stage', { stage: 'success' }); return true; })()`,
+    );
+    let got = '';
+    for (let i = 0; i < 16; i++) {
+      const anim = JSON.parse(String(await evalIn(pet, `JSON.stringify(window.__DSC_PET_ANIM__())`)));
+      got = anim.playing;
+      if (got && got.indexOf('工作状态') === 0) break;
+      await sleep(400);
+    }
+    checks.push(['报一档工作状态 → 她播对应的那一段', got.indexOf('工作状态') === 0, String(got)]);
+  }
 } finally {
   // ★还原★：不管上面炸在哪，都把配置写回原值（照样走开关那条路）
   const cur = await cfgNow().catch(() => null);

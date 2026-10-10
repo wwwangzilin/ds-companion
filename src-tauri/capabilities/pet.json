@@ -1,12 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "pet-local",
-  "description": "桌宠窗口：它只是个画立绘的小窗，所以只给它读状态和读动作素材两条命令的权限。别的一概不给 —— 桌宠不需要改任何东西。",
+  "description": "桌宠窗口：它只负责画和举手。给它的权限就是「读状态 + 读动作素材 + 报她身体的矩形 + 拖拽/走路」这几条，别的一概不给 —— 桌宠不需要改任何东西。",
   "windows": ["pet"],
   "permissions": [
     "core:default",
     "core:event:default",
     "allow-dsc-pet-state",
-    "allow-dsc-pet-clip"
+    "allow-dsc-pet-clip",
+    "allow-dsc-pet-hitbox",
+    "allow-dsc-pet-grab",
+    "allow-dsc-pet-walk",
+    "allow-dsc-pet-home"
   ]
 }

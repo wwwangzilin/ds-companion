@@ -134,6 +134,19 @@ pub struct AppConfig {
     /// 主人要对比两种手感时，把这个开关关掉即可。
     #[serde(default = "default_true")]
     pub pet_anim: bool,
+    /// 她去不去"接手"鼠标（拖动 / 点一下回应 / 右键菜单）。
+    ///
+    /// 【为什么默认开，而不是像上游那样永远吃鼠标】这里的实现是**按她身体的实际范围**
+    /// 判定（壳每 60Hz 问一次光标在哪，落在她身上才接管），所以开着也不会挡住她周围
+    /// 那圈透明区域 —— 关掉它就回到"永远穿透"的老行为，给不喜欢她抢鼠标的主人留个口子。
+    #[serde(default = "default_true")]
+    pub pet_interact: bool,
+    /// 她会不会自己动（随机换动作 / 自己在屏幕上走一段）。
+    ///
+    /// 关掉 = 只播待机那一段，也不再自己走 —— 喜欢"她就在角落里安静待着"的用这个。
+    /// 不影响的：点一下的回应、拖动、右键点播、事件（干活时的动作）——那些是主人触发的。
+    #[serde(default = "default_true")]
+    pub pet_wander: bool,
     /// **让她瞄一眼你的屏幕**（截前台窗口 → OCR 认字）。**默认关**。
     ///
     /// 【为什么这一条的门比别的都厚】它读的已经不是"你在用什么软件"，而是**屏幕上的字** ——
@@ -380,6 +393,8 @@ impl Default for AppConfig {
             pet_enabled: false,
             pet_corner: default_pet_corner(),
             pet_anim: true,
+            pet_interact: true,
+            pet_wander: true,
             // 【默认关】看屏幕上的字是这一层里最重的一件事 —— 见字段上的说明
             screen_watch: false,
             screen_every_minutes: default_screen_every(),
@@ -701,6 +716,11 @@ mod tests {
         // 动作素材**默认开**：装了素材明显更好，而没装素材时会自动回落立绘 ——
         // 所以"默认开"最坏情况就是"跟以前一样"，不会白屏。
         assert!(d.pet_anim, "桌宠默认播动作素材（没下素材时自动回落立绘）");
+        assert!(
+            d.pet_interact,
+            "默认让她接住鼠标：命中判定按她的实际范围，透明区域照旧穿透"
+        );
+        assert!(d.pet_wander, "默认让她自己动（换动作 / 走两步）");
         // ★看屏幕内容也必须默认关★ —— 它读的是屏幕上的字，比进程名重得多
         assert!(!d.screen_watch, "screen_watch 默认必须关（要勾选确认才开）");
         assert_eq!(d.screen_every_minutes, 5);

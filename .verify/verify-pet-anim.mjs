@@ -60,11 +60,21 @@ const pet = await findTarget('pet.html');
 // 只要"在播东西"就往下走的话，"起手在待机"这条会随机变红 —— 一条会因为运气红掉的断言，
 // 等于没有断言。等到 idle 再断言，才是真的在验"开窗先播待机"。
 const IDLE = '待机呼吸休闲';
+// 【为什么这里要问"活的"】`__DSC_PET_VIEW__.clip` 是 tick 时拍的快照，而她现在会自己
+// 一串串换动作（随机链），快照经常停在上一段上。等"她起手播待机"必须看实时探针 ——
+// 拿快照去等，会等到一个永远不成立的条件，然后报一条假失败。
+const liveClip = async () =>
+  JSON.parse(String(await evalIn(pet, `JSON.stringify(window.__DSC_PET_ANIM__())`))).playing;
 let v = null;
+let clipNow = '';
 for (let i = 0; i < 40; i++) {
   v = await view(pet).catch(() => null);
-  if (v && (EXPECT === 'png' ? v.mode === 'png' : v.mode === 'video' && v.clip === IDLE)) break;
-  await sleep(500);
+  if (v && v.mode === 'video') {
+    clipNow = await liveClip().catch(() => '');
+    if (EXPECT === 'video' && clipNow === IDLE) break;
+  }
+  if (v && EXPECT === 'png' && v.mode === 'png') break;
+  await sleep(400);
 }
 console.log('[视图] ' + JSON.stringify(v));
 if (!v) throw new Error('桌宠页面没给出 __DSC_PET_VIEW__');
@@ -74,7 +84,7 @@ const checks = [];
 if (EXPECT === 'video') {
   checks.push(['壳报了已装的素材', v.clips >= 6, `${v.clips} 段`]);
   checks.push(['走的是视频那条路', v.mode === 'video', v.mode]);
-  checks.push(['在播待机那段', v.clip === IDLE, String(v.clip)]);
+  checks.push(['开窗先播待机那段（之后才轮到随机链）', clipNow === IDLE, String(clipNow)]);
   // ★这两条才是"真的出画"★
   checks.push(['待机视频真的解出了帧（readyState>=2）', v.readyState >= 2, `readyState=${v.readyState}`]);
   checks.push([
@@ -82,16 +92,27 @@ if (EXPECT === 'video') {
     v.videoW > 0 && v.videoH > 0,
     `${v.videoW}x${v.videoH}`,
   ]);
-  checks.push([
-    '视频那层是可见的（opacity 生效）',
-    await evalIn(
-      pet,
-      `(() => { const a = document.getElementById('anim-a'), b = document.getElementById('anim-b');
-         const on = a.classList.contains('on') ? a : b;
-         return getComputedStyle(on).opacity === '1'; })()`,
-    ),
-    '看 computedStyle',
-  ]);
+  // 【为什么要有重试】她是靠 opacity 交叉淡入换动作的（0.42s），而她现在会自己
+  // 一串串换 —— 探测正好落在淡入中间时读到的就是 0.3 这种中间值。那不是故障，
+  // 所以给两秒的重试窗口，判据仍是"真的不透明了"。
+  let vis = false;
+  let visVal = '';
+  for (let i = 0; i < 10; i++) {
+    visVal = String(
+      await evalIn(
+        pet,
+        `(() => { const a = document.getElementById('anim-a'), b = document.getElementById('anim-b');
+           const on = a.classList.contains('on') ? a : b;
+           return getComputedStyle(on).opacity; })()`,
+      ),
+    );
+    if (parseFloat(visVal) > 0.9) {
+      vis = true;
+      break;
+    }
+    await sleep(200);
+  }
+  checks.push(['视频那层是可见的（opacity 生效）', vis, `opacity=${visVal}`]);
   checks.push([
     'CSS 那个"呼吸"关掉了（别和素材自己的动打架）',
     await evalIn(pet, `getComputedStyle(document.getElementById('stage')).animationName === 'none'`),
@@ -176,6 +197,8 @@ if (EXPECT === 'video') {
 
   await evalIn(pet, `(() => { window.__DSC_PET_PLAY__('点击回应-傲娇生气', false); return true; })()`);
   await sleep(1500);
+  // 她自己的随机链随时可能在跑，这里只关心"点的那段有没有播出来" —— 从快照改成实时探针
+  // 之后仍然要给足取素材的时间（壳读盘 + base64 + IPC，首次几百毫秒）
   // ★读**实时**探针，不读 tick 时拍的那个快照★ —— 点播不触发 tick，快照会是上一段
   const anim = JSON.parse(String(await evalIn(pet, `JSON.stringify(window.__DSC_PET_ANIM__())`)));
   console.log('[点播后·实时] ' + JSON.stringify(anim));
