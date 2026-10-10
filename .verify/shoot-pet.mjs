@@ -1,24 +1,26 @@
 /**
- * 只读截图：把**桌宠窗口**拍下来给主人看（透明窗口，所以先垫一层深色底再拍）。
+ * 只读截图：把**桌宠窗口 / 设置窗口**拍下来给主人看（透明窗口先垫一层底色再拍）。
  *
  * 【为什么要垫底色】桌宠窗是 transparent + 无边框的，直接截图得到的是带 alpha 的 PNG ——
  * 在大多数看图器里会被显示成黑底或者花格子，看不出她长什么样、气泡贴不贴。
  * 用 CDP 的默认背景色覆盖临时垫一层，拍完立刻还原（不改页面、不改数据）。
  *
- * 用法：node .verify/shoot-pet.mjs [输出png] [底色 r,g,b]
+ * 用法：node .verify/shoot-pet.mjs [输出png] [底色 r,g,b] [--settings]
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 const BASE = process.env.DSC_CDP_BASE || 'http://127.0.0.1:9223';
-const OUT = resolve(process.argv[2] || 'preview/pet-now.png');
-const RGB = (process.argv[3] || '32,32,40').split(',').map(Number);
+const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const wantSettings = process.argv.includes('--settings');
+const OUT = resolve(args[0] || (wantSettings ? 'preview/settings-now.png' : 'preview/pet-now.png'));
+const RGB = (args[1] || '32,32,40').split(',').map(Number);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const t = (await (await fetch(BASE + '/json/list')).json()).find(
-  (x) => x.url && x.url.includes('pet.html'),
+const t = (await (await fetch(BASE + '/json/list')).json()).find((x) =>
+  wantSettings ? x.url && x.url.includes('settings.html') : x.url && x.url.includes('pet.html'),
 );
-if (!t) throw new Error('桌宠窗口没开');
+if (!t) throw new Error(wantSettings ? '设置窗口没开' : '桌宠窗口没开');
 
 const ws = new WebSocket(t.webSocketDebuggerUrl);
 let seq = 0;
@@ -47,20 +49,24 @@ await send('Page.enable');
 // 还是把透明处合成到纯黑上（深色的她和黑底糊成一片，看不清）。改成临时给 html 垫一层底色，
 // 拍完立刻把那个 style 摘掉 —— 页面本身没变，数据更没碰。
 const bg = `rgb(${RGB[0]},${RGB[1]},${RGB[2]})`;
-await send('Runtime.evaluate', {
-  expression: `(() => {
-    const s = document.createElement('style');
-    s.id = 'dsc-shot-bg';
-    s.textContent = 'html,body{background:${bg} !important}';
-    document.head.appendChild(s);
-    return true;
-  })()`,
-});
-await sleep(400);
+if (!wantSettings) {
+  await send('Runtime.evaluate', {
+    expression: `(() => {
+      const s = document.createElement('style');
+      s.id = 'dsc-shot-bg';
+      s.textContent = 'html,body{background:${bg} !important}';
+      document.head.appendChild(s);
+      return true;
+    })()`,
+  });
+  await sleep(400);
+}
 const shot = await send('Page.captureScreenshot', { format: 'png' });
-await send('Runtime.evaluate', {
-  expression: `(() => { const s = document.getElementById('dsc-shot-bg'); if (s) s.remove(); return true; })()`,
-});
+if (!wantSettings) {
+  await send('Runtime.evaluate', {
+    expression: `(() => { const s = document.getElementById('dsc-shot-bg'); if (s) s.remove(); return true; })()`,
+  });
+}
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, Buffer.from(shot.result.data, 'base64'));
 console.log('截图:', OUT);
