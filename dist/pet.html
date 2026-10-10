@@ -8,6 +8,10 @@
 
       【为什么顶上留一条空白】气泡要是浮在立绘上就会盖住她的头。窗口本身是透明的，
       多留 44px 谁也看不出来 —— 但她的脸完整了。
+
+      【两种画法】`img` 那对是**立绘**（一张图交叉淡入，老路，永远留着）；`video` 那对是
+      **动作素材**（透明 webm，从 dsh-pet 摘的，见 NOTICE）。装了素材走视频，没装就走立绘 ——
+      "没下素材"是常态之一，不能因为少了它就白屏。两对图层各自交叉淡入、互不干扰。
     -->
     <link rel="stylesheet" href="pet.css" />
   </head>
@@ -19,6 +23,8 @@
     <div id="stage">
       <img class="layer" id="layer-a" alt="" draggable="false" />
       <img class="layer" id="layer-b" alt="" draggable="false" />
+      <video class="anim" id="anim-a" muted playsinline preload="auto"></video>
+      <video class="anim" id="anim-b" muted playsinline preload="auto"></video>
     </div>
     <script src="pet.js"></script>
   </body>

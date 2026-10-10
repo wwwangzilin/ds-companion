@@ -134,6 +134,30 @@ cargo build            # 首次约 3-5 分钟
 验收：`.verify/verify-avatar.mjs`（29 项：素材真的解码出来而不是"有个 img 标签"、贴左下角、
 不吃鼠标事件、上传落盘 / 非 PNG 被拒 / 清除回落 / 按角色隔离 / 设置卡片 / 开关链路双向）。
 
+### 桌宠的动作（她不再只是一张图）
+
+桌宠窗口原来是**一张 PNG 交叉淡入** —— 静止的图看着像贴纸。现在它还能播**透明 webm
+动作素材**（待机呼吸、点击回应…），素材来自 [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet)
+（MIT，见 [`NOTICE.md`](NOTICE.md)）。
+
+- **两条路都留着**：壳那边 `clips` 非空才走视频，**没下素材就回落到立绘** ——
+  "新机器上还没下过"是常态，不能因为少了它就白屏。
+- **素材不在仓库里**：`node tools/fetch-pet-assets.mjs` 按池下到
+  `<数据目录>/pets/dsh-pet/`（第一批 idle + clicks 共 6 段 ≈ 2.7 MB；`--all` 是全部 106 段 ≈ 52 MB）。
+- **壳喂 data URL，不是让页面自己读盘**：和立绘同一个走法（`dsc_pet_clip` 读 + 编 + 缓存），
+  免得为这一个功能去开 asset 协议或给桌宠窗 fs 权限。命令是 async + `spawn_blocking`，
+  不然 500 KB 的编码会把整个窗口噎住。
+- **接的第一根线**：她的**差分一变**（心情/身体算出来的 neutral/happy/smug…）就从回应池里
+  抽一段播一次，播完自己回待机。往后要接的是"她此刻在干什么"那些池（moves / categories / events）。
+- **名字是中文**，所以不能复用立绘那套只留 ASCII 的 `sanitize` —— 换了一条判据：
+  只禁路径分隔符 / `..` / 控制字符 / Windows 保留字符，其余原样保留（那也是个安全边界）。
+
+落在 `src-tauri/src/pet.rs` 的「动作素材」一节（读目录 / 洗名字 / base64 缓存）、
+`lib.rs` 的 `dsc_pet_clip`、`dist/pet.js` 的「动作素材那条路」。
+
+验收：`.verify/verify-pet-anim.mjs`（**两遍**：有素材 11 项 —— 真的解出帧而不是"有个 video 标签"、
+反应点播后换层交叉淡入、播完回待机；没素材 5 项 —— 回落到立绘、视频层不挡路、呼吸回来）。
+
 ### 用对话同步设置（换设备搬家用）
 
 把配置 / 人设 / 状态 / 记忆打成一个包，**发进一个 DeepSeek 对话**；换设备时打开那个对话、
@@ -822,6 +846,7 @@ verify-run.ps1   隔离数据 + 可调试地启动
 |---|---|---|---|
 | PoW 求解 wasm | `src-tauri/inject/sha3_wasm_bg.wasm` | npm `@rezaparsian/deepseek-pow-solver` v1.0.1（源码 [RezaParsian/DeepseekPowsolver](https://github.com/RezaParsian/DeepseekPowsolver)，包内原名 `sha3_wasm_bg.7b9ca65ddd.wasm`） | **MIT** |
 | DeepSeek 娘立绘 | `src-tauri/assets/avatars/deepseek.png` | [Ayase34/gal-view](https://github.com/Ayase34/gal-view) 默认预设 `gal-scene.json` 里内嵌的 `DeepSeek娘_立绘.png`（1024×1536） | **MIT**（Copyright (c) 2026 Yunicon） |
+| 桌宠动作素材（透明 webm） | **不在仓库里**，本地按池下到 `<数据目录>/pets/dsh-pet/` | [PC2005-cloud/dsh-pet](https://github.com/PC2005-cloud/dsh-pet) 的 `dsh-pet/assets/webm/`（106 段，约 51.8 MB） | **MIT**（Copyright (c) 2026 PC2005-cloud） |
 
 - 它干的是解 DeepSeek 的 PoW 挑战（导出 `wasm_solve` / `wasm_deepseek_hash_v1`）。
   `src-tauri/src/lib.rs` 用 `include_bytes!` 把它 **base64 内联进注入脚本**，
@@ -832,4 +857,9 @@ verify-run.ps1   隔离数据 + 可调试地启动
 - DeepSeek 娘立绘来自 DSH 的 GAL 视窗插件 **gal-view** 的默认预设场景（原作者 Yunicon，仓库 MIT）。
   那张图本来就是该仓库随包分发的默认素材，本仓库按同样方式内联进 exe、署名留在这一节。
   **同预设里的另外两张（卧室背景 / 对话框贴图）没有采用** —— 进本仓库的只有立绘这一张。
+- **桌宠动作素材不在这个仓库里**（`tools/fetch-pet-assets.mjs` 按池下到数据目录）：
+  ① 106 段 webm 一共 51.8 MB，全塞进来会把仓库撑成一座山；② 那是作者画的，它该待在自己的仓库里。
+  素材**一个字节都没改**；改的是"用它的方式"——只摘了动作池与播放这一层，接到本项目的状态源上，
+  没有搬它的 TypeScript 源码、也没有引入它的构建链（桌宠页是零构建的原生 JS）。
+  完整署名与 MIT 说明见 [`NOTICE.md`](NOTICE.md)。**没下素材也能跑**（自动回落到立绘那条路）。
 - 其余依赖见 `src-tauri/Cargo.toml` / `Cargo.lock`，都是 crates.io 上的常规 crate，各自沿用原许可。

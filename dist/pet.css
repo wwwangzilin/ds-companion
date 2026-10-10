@@ -137,7 +137,35 @@ body.asleep #stage {
   opacity: 1;
 }
 
-/* 主人把系统设成"减少动态效果"时就别晃了 —— 这是无障碍约定，不是可选项 */
+/* ── 动作素材（透明 webm；从 dsh-pet 摘的，见 NOTICE）──────────────────
+   和 `.layer` 同构：同样 contain + 底部对齐，同样靠 opacity 交叉淡入。
+   它们平时都是 0 不透明度 —— 没装素材时这一对什么都不显示，不会挡着立绘。 */
+.anim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: 50% 100%;
+  opacity: 0;
+  transition: opacity 0.42s ease;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+.anim.on {
+  opacity: 1;
+}
+
+/* 走视频那条路时，把 CSS 那个"呼吸"关掉 —— 素材自己就是动的（待机呼吸、打瞌睡…），
+   再叠一层 transform 会变成两个频率打架，看着像在抖。
+   立绘那条路照旧呼吸（静止的图不加这个就像贴纸）。 */
+#stage.video {
+  animation: none;
+}
+
+/* ── 主人把系统设成"减少动态效果"时 ────────────────────────────────────
+   立绘别晃了（无障碍约定，不是可选项）。素材这条路**不关** —— 那不是装饰性的晃动，
+   那是她本人（关掉就等于把桌宠变成一张静止的图）。 */
 @media (prefers-reduced-motion: reduce) {
   #stage,
   body.asleep #stage {

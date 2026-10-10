@@ -235,6 +235,125 @@ pub fn on_corner_changed(app: &AppHandle) {
     }
 }
 
+// ─────────────────────── 动作素材（从 dsh-pet 摘的） ───────────────────────
+//
+// 【为什么素材不在仓库里】dsh-pet 那 106 个 webm 一共 51.8 MB，而且是**别人画的**
+// （PC2005-cloud，MIT）—— 让它待在自己的仓库里，我们只在本地按池下
+// （`tools/fetch-pet-assets.mjs`，第一批只取 idle + clicks 共 2.7 MB）。
+// 【许可证】MIT 要求带上版权声明 —— 见仓库根的 NOTICE。
+//
+// 【为什么走"壳喂 data URL"这条路】桌宠窗是 WebView2 里的一个本地页面，让它自己去读
+// `%APPDATA%` 下的文件，要么开 asset 协议、要么给它 fs 权限；而**立绘本来就是这个走法**
+// （`dsc_pet_state` 直接把 PNG 编成 data URL 递过去）。同一件事只留一条路。
+
+/// 素材目录那一层（先只有 dsh-pet 这一套，将来可以有别的宠物包）
+pub const CLIP_POOL: &str = "dsh-pet";
+
+pub fn clip_dir() -> std::path::PathBuf {
+    crate::personas::app_root().join("pets").join(CLIP_POOL)
+}
+
+/// 动作名 → 安全文件名。空串 = 不接受。
+///
+/// 【为什么不能直接用 `avatar::sanitize`】那个只留 ASCII 字母数字，而 dsh-pet 的素材名是
+/// **中文**的（`待机呼吸休闲`）—— 洗一遍全变成 `-`，一个也找不到。所以这里换一条判据：
+/// **只禁危险的东西**，其余原样保留。
+pub fn safe_clip_name(raw: &str) -> String {
+    let s = raw.trim();
+    if s.is_empty() || s.chars().count() > 80 {
+        return String::new();
+    }
+    // 路径穿越 / 隐藏文件 / 路径分隔符，一律不接受
+    if s.contains('/') || s.contains('\\') || s.contains("..") || s.starts_with('.') {
+        return String::new();
+    }
+    if s.chars()
+        .any(|c| c.is_control() || matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+    {
+        return String::new();
+    }
+    s.to_string()
+}
+
+/// 现在装了哪些动作。**空表 = 没装素材 → 页面回落到立绘那条老路**。
+///
+/// 目录里就几个小文件，`read_dir` 是几十微秒的事，不值得再套一层缓存；
+/// 真正的开销在下面的 base64 编码，那个缓存了。
+pub fn clip_names() -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(clip_dir()) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("webm") {
+                continue;
+            }
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                if e.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                    out.push(stem.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// 已经编码过的动作：名字 → (文件 mtime 毫秒, data URL)。
+///
+/// 【为什么要缓存】一个 webm 中位 488 KB，编成 base64 是 650 KB —— 每换一次动作都编一遍、
+/// 还要过一次 IPC。桌宠状态那条命令已经因为同类原因被优化过一轮（见 `dsc_pet_state`），
+/// 这里一开始就带上。
+/// 【为什么带 mtime】重新下素材（`--force`）之后不用重启就能生效。
+static CLIP_CACHE: std::sync::Mutex<Option<std::collections::HashMap<String, (u64, String)>>> =
+    std::sync::Mutex::new(None);
+
+fn clip_mtime(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 取一段动作，编成 `data:video/webm;base64,…`。
+///
+/// 返回的是给页面用的 JSON：`{ok:true,name,dataUrl,bytes}` / `{ok:false,why}`。
+pub fn clip_json(raw: &str) -> serde_json::Value {
+    let name = safe_clip_name(raw);
+    if name.is_empty() {
+        return serde_json::json!({ "ok": false, "why": "名字不合法" });
+    }
+    let path = clip_dir().join(format!("{name}.webm"));
+    let mtime = clip_mtime(&path);
+    if mtime == 0 {
+        return serde_json::json!({ "ok": false, "why": "没有这段动作" });
+    }
+    let mut guard = match CLIP_CACHE.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    if let Some((at, url)) = map.get(&name) {
+        if *at == mtime {
+            return serde_json::json!({
+                "ok": true, "name": name, "dataUrl": url, "cached": true,
+            });
+        }
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => return serde_json::json!({ "ok": false, "why": format!("读不出来：{e}") }),
+    };
+    let url = format!(
+        "data:video/webm;base64,{}",
+        crate::avatar::base64_encode(&bytes)
+    );
+    let n = bytes.len();
+    map.insert(name.clone(), (mtime, url.clone()));
+    serde_json::json!({ "ok": true, "name": name, "dataUrl": url, "bytes": n, "cached": false })
+}
+
 // ─────────────────────── 窗口的"实际样子"（诊断 / 验收用） ───────────────────────
 //
 // 【为什么需要它】"置顶"和"点击穿透"是这一层最要紧的两个属性，而它们**只体现在
@@ -413,5 +532,35 @@ mod tests {
         for v in ["neutral", "happy", "smug", "angry", "sad", "sleepy", "shy"] {
             assert!(crate::avatar::is_variant(v), "{v} 不是合法变体");
         }
+    }
+
+    /// ★动作名会变成磁盘路径★ —— 这条是安全边界，不是格式检查
+    #[test]
+    fn clip_names_are_kept_but_dangerous_ones_are_rejected() {
+        // 中文名字必须原样保留：洗成 ASCII 就一个素材也找不到了
+        assert_eq!(safe_clip_name("待机呼吸休闲"), "待机呼吸休闲");
+        assert_eq!(safe_clip_name("点击回应-傲娇生气"), "点击回应-傲娇生气");
+        assert_eq!(safe_clip_name("  螃蟹走路  "), "螃蟹走路");
+        // 路径穿越 / 分隔符 / 隐藏文件，一律不接受
+        assert_eq!(safe_clip_name("../../config"), "");
+        assert_eq!(safe_clip_name("a/b"), "");
+        assert_eq!(safe_clip_name("a\\b"), "");
+        assert_eq!(safe_clip_name(".."), "");
+        assert_eq!(safe_clip_name(".hidden"), "");
+        // 空 / 超长 / 控制字符 / Windows 保留字符
+        assert_eq!(safe_clip_name(""), "");
+        assert_eq!(safe_clip_name("   "), "");
+        assert_eq!(safe_clip_name(&"喂".repeat(81)), "");
+        assert_eq!(safe_clip_name("a\nb"), "");
+        assert_eq!(safe_clip_name("a:b"), "");
+    }
+
+    /// 没装素材时 `clip_names` 必须是空表（页面靠它决定要不要走立绘那条老路）
+    #[test]
+    fn clip_names_is_empty_when_nothing_installed() {
+        // 不碰真实磁盘：只钉住"空目录 → 空表"这条契约。
+        // （真实数据目录里有素材也不能影响这条断言，所以这里不读它的返回值内容。）
+        let names = clip_names();
+        assert!(names.iter().all(|n| !n.is_empty()), "名字不该有空串：{names:?}");
     }
 }

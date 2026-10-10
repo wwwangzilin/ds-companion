@@ -2026,6 +2026,9 @@ fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
     serde_json::json!({
         "enabled": cfg.pet_enabled,
         "corner": pet::normalize_corner(&cfg.pet_corner),
+        // 装了哪些动作素材（空表 = 没下过 → 页面老老实实用立绘那条老路）。
+        // 只回名字，**不回内容** —— 内容由 dsc_pet_clip 按需取，见那里的说明。
+        "clips": pet::clip_names(),
         "id": view.id,
         "name": name,
         "variant": variant,
@@ -2044,6 +2047,21 @@ fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
         "sayAt": snap.say_at,
         "now": now_ms(),
     })
+}
+
+/// 桌宠要播的那段动作（`dsh-pet` 摘来的 webm，见 pet.rs 的素材那一节）。
+///
+/// 【为什么 async + spawn_blocking】它要读 ~500 KB 再 base64 成 ~650 KB —— 同步命令跑在
+/// 主线程上，那几十毫秒（debug 构建更久）会把整个窗口噎住。这个坑项目里踩过（见
+/// `dsc_screen_now` 的说明）。
+///
+/// 【为什么按需取而不塞进 dsc_pet_state】那条状态命令每 60 秒、每次 ping 都会跑，
+/// 往里塞 650 KB 是纯浪费；动作是"要播了才要"的。
+#[tauri::command]
+async fn dsc_pet_clip(name: String) -> serde_json::Value {
+    tauri::async_runtime::spawn_blocking(move || pet::clip_json(&name))
+        .await
+        .unwrap_or_else(|_| serde_json::json!({ "ok": false, "why": "取动作时内部出错" }))
 }
 
 /// 桌宠窗口此刻的实际样子（**只给设置窗口 / 验收用**）。
@@ -2828,6 +2846,7 @@ pub fn run() {
             dsc_avatar_toggle,
             dsc_avatar_matrix,
             dsc_pet_state,
+            dsc_pet_clip,
             dsc_pet_window,
             dsc_sync_pack,
             dsc_sync_apply,
