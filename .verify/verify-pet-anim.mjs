@@ -13,7 +13,7 @@
  *
  * 用法：$env:DSC_CDP='http://127.0.0.1:9223'; node .verify/verify-pet-anim.mjs --expect=video
  */
-const BASE = process.env.DSC_CDP_BASE || 'http://127.0.0.1:9223';
+import { BASE, findTarget, evalIn, measurePetBox } from './_pet-box.mjs';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const EXPECT = (() => {
@@ -50,38 +50,20 @@ function send(target, method, params = {}, timeoutMs = 90000) {
   });
 }
 
-async function evalIn(target, expression, timeoutMs = 90000) {
-  const r = await send(
-    target,
-    'Runtime.evaluate',
-    { expression, returnByValue: true, awaitPromise: true },
-    timeoutMs,
-  );
-  if (r && r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 400));
-  return r && r.result ? r.result.value : undefined;
-}
-
-async function findTarget(match, timeoutMs = 40000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const list = await (await fetch(`${BASE}/json/list`)).json().catch(() => []);
-    const t = (list || []).find((x) => x.url && x.url.includes(match));
-    if (t) return t;
-    if (Date.now() > deadline) throw new Error('等不到 ' + match);
-    await sleep(300);
-  }
-}
-
 const view = async (pet) =>
   JSON.parse(String(await evalIn(pet, `JSON.stringify(window.__DSC_PET_VIEW__ || null)`)));
 
 console.log(`[cdp] ${BASE}  期望模式 = ${EXPECT}`);
 const pet = await findTarget('pet.html');
-// 等第一拍跑完（tick 是异步的：先问壳再画）
+// 等第一拍跑完（tick 是异步的：先问壳再画）。
+// 【为什么要等到 clip 正好是待机】她随时可能因为差分变了而在播一段"回应"（那是随机的），
+// 只要"在播东西"就往下走的话，"起手在待机"这条会随机变红 —— 一条会因为运气红掉的断言，
+// 等于没有断言。等到 idle 再断言，才是真的在验"开窗先播待机"。
+const IDLE = '待机呼吸休闲';
 let v = null;
-for (let i = 0; i < 30; i++) {
+for (let i = 0; i < 40; i++) {
   v = await view(pet).catch(() => null);
-  if (v && (EXPECT === 'png' ? v.mode === 'png' : v.mode === 'video' && v.clip)) break;
+  if (v && (EXPECT === 'png' ? v.mode === 'png' : v.mode === 'video' && v.clip === IDLE)) break;
   await sleep(500);
 }
 console.log('[视图] ' + JSON.stringify(v));
@@ -92,7 +74,7 @@ const checks = [];
 if (EXPECT === 'video') {
   checks.push(['壳报了已装的素材', v.clips >= 6, `${v.clips} 段`]);
   checks.push(['走的是视频那条路', v.mode === 'video', v.mode]);
-  checks.push(['在播待机那段', v.clip === '待机呼吸休闲', String(v.clip)]);
+  checks.push(['在播待机那段', v.clip === IDLE, String(v.clip)]);
   // ★这两条才是"真的出画"★
   checks.push(['待机视频真的解出了帧（readyState>=2）', v.readyState >= 2, `readyState=${v.readyState}`]);
   checks.push([
@@ -114,6 +96,57 @@ if (EXPECT === 'video') {
     'CSS 那个"呼吸"关掉了（别和素材自己的动打架）',
     await evalIn(pet, `getComputedStyle(document.getElementById('stage')).animationName === 'none'`),
     '看 animation-name',
+  ]);
+
+  // ── 她自己多大、气泡贴不贴得住 ──
+  // 【为什么要扫像素】`#stage` 是 200×300 的盒子，而素材四面留白（实测她本人只占整帧的
+  // 33%×75%）。照盒子缩放的话她只有 67×85，气泡却按立绘那套钉在窗口顶上 —— 离她头顶
+  // 一百多像素，看着就是"对话框和桌宠对不上"。这两条断言量的都是**画出来的结果**：
+  // 她本人多大（alpha 外接矩形）、气泡的下沿离她的头顶有多远。
+  let box = null;
+  for (let i = 0; i < 40; i++) {
+    box = await measurePetBox(pet).catch(() => null);
+    if (box && box.fitted && box.screenBox && box.clip === '待机呼吸休闲') break;
+    await sleep(500);
+  }
+  console.log('[她本人] ' + JSON.stringify(box && {
+    fitted: box.fitted,
+    screenBox: box.screenBox,
+    petHead: box.petHeadVar,
+    petW: box.petWVar,
+    bubble: box.bubbleSpan,
+    sayMaxW: box.sayMaxW,
+  }));
+  if (!box || !box.screenBox) throw new Error('量不到她本人的外接矩形：' + JSON.stringify(box));
+
+  const her = box.screenBox;
+  const bubbleBottom = +(box.bubble.y + box.bubble.h).toFixed(1);
+  const headGap = +(her.top - bubbleBottom).toFixed(1);
+  checks.push(['摆正生效果了（素材按她本人缩放）', box.fitted === true, String(box.fitted)]);
+  checks.push([
+    '她本人是桌宠的尺寸（不是按整帧缩出来的小不点）',
+    her.h >= 150 && her.w >= 120,
+    `${her.w}×${her.h}px（窗口 ${box.window.w}×${box.window.h}）`,
+  ]);
+  checks.push([
+    '没被窗口切掉（左右都在窗口里）',
+    her.left >= -1 && her.right <= box.window.w + 1,
+    `left=${her.left} right=${her.right}`,
+  ]);
+  checks.push([
+    '气泡没压在她头上',
+    bubbleBottom <= her.top + 1,
+    `气泡下沿 ${bubbleBottom} vs 她头顶 ${her.top}`,
+  ]);
+  checks.push([
+    '气泡贴着她的头（不是飘在窗口顶上）',
+    headGap >= -1 && headGap <= 30,
+    `间距 ${headGap}px`,
+  ]);
+  checks.push([
+    '气泡的宽度跟着她的宽度走',
+    Math.abs(parseFloat(box.sayMaxW) - parseFloat(box.petWVar)) < 2 && parseFloat(box.sayMaxW) < 194,
+    `气泡 max-width=${box.sayMaxW}，她 ${box.petWVar}`,
   ]);
 
   // ── 点播一段"回应"，验反应那条路 ──
@@ -193,6 +226,11 @@ if (EXPECT === 'video') {
     await evalIn(pet, `getComputedStyle(document.getElementById('stage')).animationName !== 'none'`),
     '看 animation-name',
   ]);
+  // 素材那套摆正绝不能漏到立绘这条路上：立绘本来就撑满窗口，气泡钉在顶上是对的
+  const png = await measurePetBox(pet);
+  checks.push(['没套用素材那套摆正', png.fitted === false, String(png.fitted)]);
+  checks.push(['立绘模式下气泡还钉在窗口顶上', png.say.y <= 1, `say.y=${png.say.y}`]);
+  checks.push(['立绘模式下气泡宽度还是默认的 194px', png.sayMaxW === '194px', png.sayMaxW]);
 }
 
 let bad = 0;
@@ -203,4 +241,9 @@ for (const [name, ok, ev] of checks) {
 }
 console.log('');
 console.log(bad === 0 ? `★ 全过：${checks.length}/${checks.length}（${EXPECT}）★` : `${checks.length - bad}/${checks.length} 过`);
+// 【为什么退出前要等一下】CDP 连接是定时关的（见 _pet-box.mjs 的 send），立刻 process.exit
+// 会让 node 的 ws 在 uv 收尾阶段撞上 `UV_HANDLE_CLOSING` 断言 —— 表现是"全过"却以 exit 1
+// 收场。验收脚本假红比漏测更坏（会让人去改一个本来正确的东西），所以等它关干净。
+await sleep(200);
 process.exit(bad === 0 ? 0 : 1);
+

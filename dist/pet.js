@@ -69,6 +69,160 @@ let want = '';
 let lastVariant = '';
 let videoMode = false;
 
+// ─────────────────────── 她本人有多大 ───────────────────────
+//
+// 【为什么不量 `#stage`】stage 是 200×300 的盒子，而 640×360 的素材按 `object-fit: contain`
+// 缩进去只占盒子中间那一条 —— **盒子的几何不是她的几何**。实测那张帧里她只占 214×269
+// （整帧的 33%×75%），照盒子缩放等于把她缩成 67×85 的小不点，气泡还孤零零飘在窗口顶上。
+//
+// 【为什么扫 alpha】素材四面都是透明留白，只有像素自己知道她在哪。把当前那一帧画进
+// 离屏 canvas，扫一遍非透明像素求外接矩形 —— 这是唯一"眼见为实"的口径。
+//
+// 【为什么连采几帧取并集】待机那段有 10 秒长，姿势一直在动（实测同一段素材里她的
+// 外接矩形前后差 8px 多）。只量一帧会量到一个"收着"的姿势，等她张开手臂就顶出窗口、
+// 被切掉一块。并集只会偏大一点，而偏大只是让她稍微站低一点，偏小才是真出事。
+//
+// 【为什么边量边改】等满一整圈再定位的话，前 10 秒她得先以旧尺寸（67px 高的小不点）
+// 站着、然后"啪"地跳一下。并集是单调变大的，量到新的边界就顺手更新一次 —— 收敛在
+// 一圈之内，中间每次变化都只有几个像素。
+//
+// 【量不出来就退回老样子】canvas 万一被判污染、视频还没出帧…… 一律不加 `.fitted`：
+// 宁可小，也不能白屏或者把她裁掉半个。
+const FIT = {
+  everyMs: 300, // 采样间隔
+  maxMs: 12000, // 最多量这么久（素材没报时长时的兜底）
+  padW: 14, // 左右留白：姿势会往外张，贴着窗口边就容易切到
+  padH: 8, // 头顶留白
+  padB: 4, // 脚底留白
+  minPct: 0.02,
+  maxPct: 0.95,
+};
+let fitGeom = null; // 量出来之后：{ cw, ch, s } —— 内容尺寸（帧坐标）与缩放系数
+let fitTimer = null;
+let fitBox = null; // 已经写进 CSS 的那个矩形（帧坐标）
+let fitSamples = 0;
+let fitStopped = false;
+let fitCanvas = null;
+
+/** 现在露在外面的那一层（要量的是"正在播的那一个"，不是固定的 a） */
+function frontAnim() {
+  const a = $('anim-a');
+  return a.classList.contains('on') ? a : $('anim-b');
+}
+
+/** 扫 alpha 求非透明像素的外接矩形（帧坐标）。取不到可用的帧 → null。 */
+function alphaBox(v) {
+  const w = v.videoWidth;
+  const h = v.videoHeight;
+  if (!w || !h || v.readyState < 2) return null;
+  if (!fitCanvas) fitCanvas = document.createElement('canvas');
+  if (fitCanvas.width !== w || fitCanvas.height !== h) {
+    fitCanvas.width = w;
+    fitCanvas.height = h;
+  }
+  const ctx = fitCanvas.getContext('2d', { willReadFrequently: true });
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(v, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  let hit = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] > 8) {
+        hit++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (!hit) return null;
+  const pct = hit / (w * h);
+  // 几乎全透明（等于没画面）或几乎不透明（多半是解码出了底色，不是她）—— 都不可信
+  if (pct < FIT.minPct || pct > FIT.maxPct) return null;
+  return { minX, minY, maxX, maxY, hit };
+}
+
+/** b 有没有跑到 a 的外面去（哪怕一条边）——"还要不要再摆一次"的判据 */
+function grewOutside(a, b) {
+  if (!a) return true;
+  return b.minX < a.minX || b.minY < a.minY || b.maxX > a.maxX || b.maxY > a.maxY;
+}
+
+function unionBox(a, b) {
+  if (!a) return b;
+  return {
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+  };
+}
+
+function syncFitClasses() {
+  const on = videoMode && !!fitGeom;
+  $('stage').classList.toggle('fitted', on);
+  document.body.classList.toggle('fitted', on);
+}
+
+/** 把素材摆正：她本人撑满窗口宽、脚底贴舞台底（留一点边，姿势外张时不会切到她）。 */
+function applyFit(box, v) {
+  const stage = $('stage');
+  const sw = stage.clientWidth;
+  const sh = stage.clientHeight;
+  const cw = box.maxX - box.minX + 1;
+  const ch = box.maxY - box.minY + 1;
+  const s = Math.min((sw - FIT.padW) / cw, (sh - FIT.padH - FIT.padB) / ch);
+  if (!(s > 0) || !isFinite(s)) return false;
+  const st = stage.style;
+  st.setProperty('--anim-w', (v.videoWidth * s).toFixed(1) + 'px');
+  st.setProperty('--anim-h', (v.videoHeight * s).toFixed(1) + 'px');
+  st.setProperty('--anim-left', ((sw - cw * s) / 2 - box.minX * s).toFixed(1) + 'px');
+  st.setProperty('--anim-top', (sh - FIT.padB - (box.maxY + 1) * s).toFixed(1) + 'px');
+  const rt = document.documentElement.style;
+  // 她头顶离窗口底边多远 —— 气泡就挂在这个高度的上面（见 pet.css 的 body.fitted）
+  rt.setProperty('--pet-head', (FIT.padB + ch * s).toFixed(1) + 'px');
+  rt.setProperty('--pet-w', (cw * s).toFixed(1) + 'px');
+  fitGeom = { cw, ch, s };
+  syncFitClasses();
+  return true;
+}
+
+/** 待机那段一出来就开始量：一整圈里每隔 FIT.everyMs 采一帧，外接矩形取并集。 */
+function startFitProbe() {
+  if (fitStopped || fitTimer || !videoMode) return;
+  const v = frontAnim();
+  if (v.readyState < 2 || !v.videoWidth) return;
+  const span = Math.min(Math.max((v.duration || 0) * 1000 + 400, 2000), FIT.maxMs);
+  const t0 = Date.now();
+  let bad = 0;
+  fitTimer = setInterval(() => {
+    // 采样期间素材可能被换掉（一段"回应"插了进来）—— 那一帧不算数，否则量到别人的姿势
+    if (v.classList.contains('on') && playing === CLIP_IDLE) {
+      let box = null;
+      try {
+        box = alphaBox(v);
+      } catch (e) {
+        bad++; // 多半是 canvas 被判污染：这条路走不通，别再重试
+      }
+      if (box) {
+        fitSamples++;
+        const merged = unionBox(fitBox, box);
+        if (grewOutside(fitBox, merged) && applyFit(merged, v)) fitBox = merged;
+      }
+    }
+    if (bad >= 2 || Date.now() - t0 >= span) {
+      clearInterval(fitTimer);
+      fitTimer = null;
+      fitStopped = true; // 一圈量完了（素材是静态的，不会自己再变大）
+    }
+  }, FIT.everyMs);
+}
+
 /** 一段动作播完了（非循环的那种）→ 回到待机 */
 function backToIdle() {
   playing = '';
@@ -90,6 +244,8 @@ function startClip(name, loop) {
     animFront = animFront === 'a' ? 'b' : 'a';
     playing = name;
     want = ''; // 想播的已经播上了，别再拦着下一段
+    // 待机那段一出来就顺便量一下她有多大（气泡要贴着她的头，见 FIT 那一段）
+    if (name === CLIP_IDLE) startFitProbe();
   };
   next.src = clipUrl[name];
 }
@@ -137,8 +293,12 @@ async function tick() {
   clips = Array.isArray(s.clips) ? s.clips : [];
   videoMode = clips.indexOf(CLIP_IDLE) >= 0;
   $('stage').classList.toggle('video', videoMode);
+  syncFitClasses();
 
   if (videoMode) {
+    // 量一次她有多大（内部自带"量过了就不再来"的开关）。量不到就不加 `.fitted`，
+    // 气泡会停在立绘那套位置、她也还是按整帧缩的小样子，虽然不好看，但不会错位到别处
+    startFitProbe();
     // 【`!want` 这一半不能少】只写 `!playing` 的话，一段"回应"正在取素材的空档里这一拍会
     // 顺手去请求待机，把 `want` 覆盖掉 —— 回应加载回来一看"想播的不是我了"就自己放弃，
     // 表现成"点了没反应"。这个竞态是验收脚本抓出来的（点播 1.5 秒后还在播待机）。
@@ -194,6 +354,17 @@ async function tick() {
     readyState: v.readyState,
     videoW: v.videoWidth,
     videoH: v.videoHeight,
+    // ── 她本人被摆成多大（量出来之后才有）──
+    // 【为什么要把这个报出来】气泡的位置是从 `--pet-head` 推出来的，验收要能一眼
+    // 看出"量到了没有、量成了多大"，而不是拿 DOM 里有没有 `.fitted` 当证据。
+    fitted: videoMode && !!fitGeom,
+    fit: fitGeom
+      ? {
+          w: +(fitGeom.cw * fitGeom.s).toFixed(1),
+          h: +(fitGeom.ch * fitGeom.s).toFixed(1),
+          samples: fitSamples,
+        }
+      : null,
   };
 }
 
@@ -221,6 +392,7 @@ window.__DSC_PET_ANIM__ = function () {
     front: animFront,
     mode: videoMode ? 'video' : 'png',
     clips: clips.length,
+    fitted: videoMode && !!fitGeom,
     loaded: Object.keys(clipUrl).filter((k) => !!clipUrl[k]).length,
     layerA: { on: a.classList.contains('on'), readyState: a.readyState, w: a.videoWidth },
     layerB: { on: b.classList.contains('on'), readyState: b.readyState, w: b.videoWidth },

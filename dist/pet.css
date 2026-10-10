@@ -93,6 +93,10 @@ body {
   /* 从脚底起伏，头顶才不会飘走 */
   transform-origin: 50% 100%;
   animation: breathe 5.2s ease-in-out infinite;
+  /* 【为什么必须裁】摆正之后素材元素比舞台大一圈（负 left、比舞台宽），不裁的话
+     document 的内容盒子会被撑大 —— `body{overflow:hidden}` 挡住了滚动条，但截图
+     之类按"文档内容"取景的东西会拿到一张 353×362 的空边图。舞台就是她的边界。 */
+  overflow: hidden;
 }
 @keyframes breathe {
   0%,
@@ -161,6 +165,48 @@ body.asleep #stage {
    立绘那条路照旧呼吸（静止的图不加这个就像贴纸）。 */
 #stage.video {
   animation: none;
+}
+
+/* ── 摆正之后：素材按「她本人」缩放，而不是按整帧 ───────────────────────
+   素材那张帧四面都是透明留白（实测她只占帧的 214×269，也就是 33%×75%），
+   按整帧 `contain` 的结果是她被缩成 67×85 的小不点。四个变量是 pet.js 扫完
+   alpha 外接矩形之后写在 `#stage` 上的；**没量到就不加 `.fitted`**，
+   于是这里整段不生效，退回上面的 contain 老样子 —— 宁可小，也不能白屏或裁掉半个她。 */
+#stage.fitted .anim {
+  inset: auto;
+  left: var(--anim-left, 0);
+  top: var(--anim-top, 0);
+  width: var(--anim-w, 100%);
+  height: var(--anim-h, 100%);
+  /* 元素盒子和帧同比例（都由同一个缩放系数算出来），所以 fill 不会拉伸 */
+  object-fit: fill;
+}
+
+/* ── 气泡跟着她的头走 ─────────────────────────────────────────────────
+   立绘撑满窗口，气泡钉在顶上没问题；素材摆正之后她头顶在窗口偏下的位置，
+   气泡还钉在顶上就要离她一百多像素远。
+   `--pet-head` = 她头顶离窗口**底边**的高度（pet.js 量的）—— 改成从底边锚定，
+   气泡就永远贴在她头顶上方，两行文字也只会往上长、不会压到她脸上。 */
+body.fitted #say {
+  top: auto;
+  bottom: calc(var(--pet-head, 0px) + 6px);
+  /* 从底边锚定之后，"收起"要往下走（往上走是往她头上撞） */
+  transform: translateY(5px);
+}
+body.fitted #say.on {
+  transform: translateY(0);
+}
+body.fitted #bubble {
+  top: auto;
+  bottom: calc(var(--pet-head, 0px) + 8px);
+}
+/* 气泡的宽度跟着她的宽度走（窄素材配宽气泡会很突兀），但留 120px 下限 ——
+   窄到放不下两行字的话，line-clamp 会把文案直接裁掉。 */
+body.fitted #say span {
+  max-width: clamp(120px, var(--pet-w, 194px), 194px);
+}
+body.fitted #bubble span {
+  max-width: clamp(120px, var(--pet-w, 192px), 192px);
 }
 
 /* ── 主人把系统设成"减少动态效果"时 ────────────────────────────────────
