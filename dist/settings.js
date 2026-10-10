@@ -1092,13 +1092,33 @@ async function refreshPet() {
   const on = !!c.petEnabled;
   $('pet-enabled').checked = on;
   $('pet-sub').textContent = on ? '开着 · 置顶透明小窗' : '关着';
+  // 动作素材那个开关：壳那边 `petAnim` 关掉时 `clips` 会回空表，桌宠自己就走立绘那条路 ——
+  // 页面这边不用管"有没有素材"，只画主人的选择。
+  const anim = c.petAnim !== false; // 缺字段当开（和壳里的 serde 默认一致）
+  $('pet-anim').checked = anim;
   const corner = String(c.petCorner || 'br').toLowerCase();
   const btn =
     document.querySelector(`#pet-corner button[data-v="${corner}"]`) ||
     document.querySelector('#pet-corner button[data-v="br"]');
   placePill('pet-corner-pill', btn);
-  window.__DSC_PET_CFG__ = { enabled: on, corner };
+  window.__DSC_PET_CFG__ = { enabled: on, corner, anim };
 }
+
+$('pet-anim').addEventListener('change', async (e) => {
+  const want = e.target.checked;
+  try {
+    await patchCfg({ petAnim: want });
+    toast(
+      want
+        ? '换成动作素材了 —— 没下过素材的话还是立绘（node tools/fetch-pet-assets.mjs）'
+        : '换回立绘了',
+    );
+  } catch (err) {
+    e.target.checked = !want;
+    fail(err);
+  }
+  await refreshPet().catch(fail);
+});
 
 $('pet-enabled').addEventListener('change', async (e) => {
   const want = e.target.checked;

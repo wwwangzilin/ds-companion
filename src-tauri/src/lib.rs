@@ -2028,7 +2028,13 @@ fn dsc_pet_state(have: Option<String>) -> serde_json::Value {
         "corner": pet::normalize_corner(&cfg.pet_corner),
         // 装了哪些动作素材（空表 = 没下过 → 页面老老实实用立绘那条老路）。
         // 只回名字，**不回内容** —— 内容由 dsc_pet_clip 按需取，见那里的说明。
-        "clips": pet::clip_names(),
+        // 【开关就长在这儿】`petAnim` 关掉 = 回一张空表，页面于是自动走立绘那条路 ——
+        // 不需要在页面里再加一个分支（那条回落路径本来就要为"没下素材"存在，复用即可）。
+        "clips": if cfg.pet_anim {
+            pet::clip_names()
+        } else {
+            Vec::new()
+        },
         "id": view.id,
         "name": name,
         "variant": variant,

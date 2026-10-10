@@ -831,6 +831,11 @@
               <span class="track"><span class="knob"></span></span>
               <span class="switch-label">让立绘待在桌面上</span>
             </label>
+            <label class="switch" title="用透明动作素材（会呼吸、差分一变会回应）代替那张静止的立绘。素材不在仓库里，要另下：node tools/fetch-pet-assets.mjs。没下过的话这一项开着也还是立绘。">
+              <input type="checkbox" id="pet-anim" />
+              <span class="track"><span class="knob"></span></span>
+              <span class="switch-label">播动作素材（关掉就用立绘）</span>
+            </label>
             <div class="gates">
               <div class="gate">
                 <span class="gate-label">待在哪个角</span>
@@ -850,6 +855,11 @@
             <p class="hint">
               表情会跟着状态走（困了就眯眼、生气就竖眉毛）；头顶那条小字是她手上正在做的事。
               关掉这个开关，窗口立刻消失，配置会记住你的选择。
+            </p>
+            <p class="hint">
+              动作素材来自开源项目 <b>dsh-pet</b>（MIT），<b>不在这个仓库里</b>、要按池下到本地：
+              <code>node tools/fetch-pet-assets.mjs</code>（第一批 6 段约 2.7 MB，
+              加 <code>--all</code> 是全部 106 段约 52 MB）。<b>没下也能用</b> —— 会自动回落到立绘。
             </p>
           </section>
 

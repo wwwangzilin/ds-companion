@@ -126,6 +126,14 @@ pub struct AppConfig {
     /// （tauri-apps/tauri#14764）。四个角够用了 —— 它本来就该待在边上。
     #[serde(default = "default_pet_corner")]
     pub pet_corner: String,
+    /// **桌宠播动作素材**（透明 webm，从 dsh-pet 摘的，见 NOTICE.md）。关掉就用那张 PNG 差分。
+    ///
+    /// 【为什么默认开】装了素材的话它明显更好（真的在呼吸、差分一变会回应）；而
+    /// **没装素材时它自动回落到立绘**（`dsc_pet_state` 的 `clips` 会是空表）——
+    /// 所以"默认开"最坏情况下等于"跟以前一模一样"，不会白屏、也不会报错。
+    /// 主人要对比两种手感时，把这个开关关掉即可。
+    #[serde(default = "default_true")]
+    pub pet_anim: bool,
     /// **让她瞄一眼你的屏幕**（截前台窗口 → OCR 认字）。**默认关**。
     ///
     /// 【为什么这一条的门比别的都厚】它读的已经不是"你在用什么软件"，而是**屏幕上的字** ——
@@ -371,6 +379,7 @@ impl Default for AppConfig {
             // 【默认关】桌宠一出现就得让人知道那是谁的东西 —— 见字段上的说明
             pet_enabled: false,
             pet_corner: default_pet_corner(),
+            pet_anim: true,
             // 【默认关】看屏幕上的字是这一层里最重的一件事 —— 见字段上的说明
             screen_watch: false,
             screen_every_minutes: default_screen_every(),
@@ -689,6 +698,9 @@ mod tests {
         // ★桌宠也默认关★ —— 一个置顶窗口凭空出现在桌面上，得是主人自己点开的
         assert!(!d.pet_enabled, "pet_enabled 默认必须关（要主人自己点头才开）");
         assert_eq!(d.pet_corner, "br", "桌宠默认待在右下角");
+        // 动作素材**默认开**：装了素材明显更好，而没装素材时会自动回落立绘 ——
+        // 所以"默认开"最坏情况就是"跟以前一样"，不会白屏。
+        assert!(d.pet_anim, "桌宠默认播动作素材（没下素材时自动回落立绘）");
         // ★看屏幕内容也必须默认关★ —— 它读的是屏幕上的字，比进程名重得多
         assert!(!d.screen_watch, "screen_watch 默认必须关（要勾选确认才开）");
         assert_eq!(d.screen_every_minutes, 5);
